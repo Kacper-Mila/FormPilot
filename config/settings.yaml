@@ -1,0 +1,11 @@
+app:
+    name: FormPilot
+    log_level: INFO
+    strict_mode: false
+paths:
+    data_dir: data
+    cleaned_data: data/cleaned_surveys.csv
+    generated_responses: data/generated_responses.csv
+    logs_dir: logs
+    schema_export: data/schema.json
+    model_export: data/probability_model.json
