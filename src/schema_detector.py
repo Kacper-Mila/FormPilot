@@ -26,7 +26,6 @@ class FieldType(str, Enum):
     MULTI_CHOICE = "multi_choice"
     SCALE = "scale"
     TEXT = "text"
-    OPTIONAL = "optional"
     UNKNOWN = "unknown"
 
 
@@ -83,13 +82,6 @@ def detect_schema(dataframe: pd.DataFrame) -> SurveySchema:
         else:
             field_type = FieldType.UNKNOWN
 
-        if missing_ratio > 0.3:
-            field_type = (
-                FieldType.OPTIONAL
-                if field_type != FieldType.UNKNOWN
-                else FieldType.OPTIONAL
-            )
-
         questions.append(
             SurveyQuestion(
                 question_id=f"q_{index}",
@@ -97,7 +89,7 @@ def detect_schema(dataframe: pd.DataFrame) -> SurveySchema:
                 question_text=column_name,
                 field_type=field_type,
                 allowed_values=unique_values,
-                optional=missing_ratio > 0.0,
+                optional=missing_ratio > 0.3,
                 dependency_metadata={"missing_ratio": missing_ratio},
             )
         )
