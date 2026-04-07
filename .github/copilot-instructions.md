@@ -7,73 +7,142 @@ FormPilot is a modular Python 3.14+ application for Polish survey CSV analysis, 
 - Load completed survey CSV files safely, including Polish text and common CSV encodings.
 - Clean and normalize survey data before analysis.
 - Infer a reusable survey schema from the dataset.
-- Learn answer distributions and simple dependencies.
+- Learn answer distributions and lightweight dependencies.
 - Generate one coherent synthetic respondent at a time.
 - Parse Google Forms, map form questions to dataset schema, and automate submission.
-- Repeat the generate -> fill -> submit workflow for a user-defined number of runs.
+- Repeat the generate → fill → submit workflow for a user-defined number of runs.
 
 ## Core Design Principles
 
-- Prefer a probability-driven approach over heavy machine learning for the MVP.
+- Prefer a probability-driven statistical approach over heavy machine learning for the MVP.
 - Keep the architecture modular so each module can evolve independently.
 - Optimize for reliability, traceability, and debugging.
 - Preserve Polish characters and Unicode-safe behavior end to end.
 - Favor small, testable changes over large cross-cutting rewrites.
+- Use explicit internal data contracts between modules.
+
+## Required Internal Models
+
+Prefer `dataclasses` or `pydantic` models for stable interfaces.
+
+Core models:
+- `SurveySchema`
+- `GeneratedResponse`
+- `FormQuestion`
+- `MappingEntry`
+
+Do not pass loosely structured dictionaries between major modules unless explicitly required.
 
 ## Implementation Order
 
-When building or extending the project, prefer this sequence:
+Build and validate modules in this sequence:
 
 1. `src/logger.py`
 2. `src/data_loader.py`
 3. `src/data_cleaner.py`
 4. `src/schema_detector.py`
 5. `src/probability_model.py`
-6. `src/persona_generator.py`
-7. `src/response_generator.py`
-8. `src/form_parser.py`
-9. `src/form_mapper.py`
-10. `src/google_form_filler.py`
-11. `src/submission_runner.py`
-12. `src/main.py`
+6. `src/response_generator.py`
+7. `src/form_parser.py`
+8. `src/form_mapper.py`
+9. `src/google_form_filler.py`
+10. `src/submission_runner.py`
+11. `src/main.py`
 
-Do not try to generate the entire system at once unless explicitly requested. Build and validate one module at a time.
+Optional after validation:
+12. `src/persona_generator.py`
+
+Do not generate the full system at once unless explicitly requested.
+
+## Configuration Rules
+
+Centralize runtime settings in:
+
+`config/settings.yaml`
+
+Supported config options:
+- CSV path
+- Google Form URL
+- submission count
+- headless mode
+- retry count
+- Playwright delays
+- output paths
+- logging level
+- screenshot path
+- duplicate prevention threshold
+
+Do not hardcode runtime constants inside feature modules.
 
 ## Data Handling Rules
 
-- Support UTF-8 and other common Polish CSV encodings.
+- Support UTF-8 and common Polish CSV encodings.
 - Auto-detect delimiters when possible.
 - Normalize column names and repeated labels consistently.
 - Treat empty strings as missing values.
 - Save cleaned data to `data/cleaned_surveys.csv`.
-- Keep generated responses and model artifacts available for debugging and traceability.
+- Preserve generated responses and model artifacts for debugging.
+- Never lose Polish diacritics.
 
 ## Schema and Modeling Rules
 
 - Classify every column into a usable survey field type.
-- Support single-choice, multi-select, Likert/scale, short text, long text, and optional fields.
-- Learn marginal probabilities first, then simple conditional dependencies.
-- Keep probability tables inspectable and reusable by downstream modules.
-- Use persona logic only as a controlled layer on top of the statistical model.
+- Support:
+  - single-choice
+  - multi-select
+  - Likert / scale
+  - short text
+  - long text
+  - optional fields
+- Learn marginal probabilities first.
+- Add simple conditional dependencies second.
+- Keep probability tables inspectable and reusable.
+
+## Response Generation Rules
+
+- Generate one full respondent per run.
+- Generate anchor variables first.
+- Generate dependent answers second.
+- Validate final answer consistency.
+- Avoid exact duplicates.
+- Add controlled randomness without breaking dependencies.
+- Save generated rows for traceability.
 
 ## Form Automation Rules
 
 - Use Playwright for browser automation.
-- Handle radio buttons, checkboxes, dropdowns, short answers, paragraph answers, scales, and multi-page navigation.
-- Detect visible question blocks and section/page structure before filling.
-- Save screenshots and logs when automation fails.
+- Detect visible question blocks before filling.
+- Handle:
+  - radio buttons
+  - checkboxes
+  - dropdowns
+  - short answers
+  - paragraph answers
+  - scales
+  - multi-page navigation
+- Wait explicitly for visible interactive elements.
+- Save screenshots and logs on failure.
 - Flag unmatched or low-confidence mappings instead of guessing silently.
 
 ## Coding Preferences
 
-- Use clear type hints and docstrings for public functions and classes.
+- Use strong type hints.
+- Add docstrings for public APIs.
 - Keep functions small and focused.
-- Prefer explicit error handling with helpful messages.
-- Avoid unnecessary complexity, abstractions, or premature optimization.
-- Preserve existing style and public APIs unless a change is required.
+- Prefer explicit exceptions with actionable messages.
+- Preserve existing public interfaces unless refactoring is necessary.
+- Avoid premature abstraction.
 
 ## Output and Debugging Expectations
 
-- Save intermediate artifacts when they help explain behavior: cleaned CSVs, schema JSON, learned probability tables, generated response rows, logs, and failure screenshots.
-- Make failures easy to inspect and recover from.
-- If a requirement is ambiguous, infer the safest MVP-friendly interpretation from the project docs before expanding scope.
+Persist useful artifacts:
+- cleaned CSV
+- schema JSON
+- probability tables
+- generated responses
+- submission logs
+- failure screenshots
+
+Failures must be easy to inspect and replay.
+
+If a requirement is ambiguous, choose the safest MVP-friendly interpretation from the project documentation before expanding scope.
