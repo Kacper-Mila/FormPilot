@@ -9,6 +9,8 @@ from typing import Any, cast
 
 import yaml
 
+from data_cleaner import clean_dataframe, save_cleaned_csv
+from data_loader import load_csv
 from logger import setup_logging
 
 
@@ -45,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the skeleton CLI and verify config/logging bootstrap."""
+    """Run CLI bootstrap and optionally execute CSV loading/cleaning flow."""
 
     args = build_parser().parse_args(argv)
     settings = load_settings(args.config)
@@ -62,7 +64,22 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("Form URL received: %s", args.form)
     logger.info("Submission count requested: %s", args.count)
 
-    print("FormPilot skeleton is ready.")
+    csv_path = args.csv or settings.get("paths", {}).get("csv_path")
+    cleaned_output = settings.get("paths", {}).get(
+        "cleaned_data", "data/cleaned_surveys.csv"
+    )
+
+    if csv_path:
+        logger.info("Loading CSV data from %s", csv_path)
+        dataframe = load_csv(csv_path)
+        cleaned = clean_dataframe(dataframe)
+        saved_path = save_cleaned_csv(cleaned, cleaned_output)
+        logger.info("Cleaned dataset saved to %s", saved_path)
+        print(f"Cleaned CSV generated at: {saved_path}")
+    else:
+        logger.info("No CSV provided; skipping Phase 2 cleaning flow")
+        print("FormPilot bootstrap is ready. Provide --csv to run data cleaning.")
+
     return 0
 
 
