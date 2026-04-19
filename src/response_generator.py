@@ -9,7 +9,7 @@ import random
 from typing import Any
 
 from probability_model import ProbabilityModel
-from persona_generator import Persona
+from persona_generator import Persona, PersonaGenerator
 
 
 def _default_metadata() -> dict[str, Any]:
@@ -34,24 +34,44 @@ class ResponseGenerator:
     """Generate a single synthetic respondent from a learned model."""
 
     def __init__(
-        self, model: ProbabilityModel | None = None, random_seed: int | None = None
+        self,
+        model: ProbabilityModel | None = None,
+        random_seed: int | None = None,
+        persona_generator: PersonaGenerator | None = None,
     ) -> None:
         self.model = model or ProbabilityModel()
         self.random = random.Random(random_seed)
+        self.persona_generator = persona_generator or PersonaGenerator(
+            random_seed=random_seed
+        )
 
     def generate_response(self, persona: Persona | None = None) -> GeneratedResponse:
         """Create one response using marginal probabilities when available."""
+
+        active_persona = persona or self.persona_generator.choose_persona()
 
         answers: dict[str, Any] = {}
         for column_name, value_distribution in self.model.marginals.items():
             values = list(value_distribution.keys())
             weights = list(value_distribution.values())
-            answers[column_name] = self.random.choices(values, weights=weights, k=1)[0]
+            adjusted_weights = self.persona_generator.build_persona_adjusted_weights(
+                persona=active_persona,
+                options=[str(value).strip().lower() for value in values],
+                base_weights=[float(weight) for weight in weights],
+            )
+            answers[column_name] = self.random.choices(
+                values,
+                weights=adjusted_weights,
+                k=1,
+            )[0]
 
         return GeneratedResponse(
             response_id=str(uuid4()),
-            persona_id=persona.persona_id if persona else None,
+            persona_id=active_persona.persona_id,
             answers=answers,
             generated_at=datetime.now(timezone.utc).isoformat(),
-            metadata={"persona": persona.name if persona else None},
+            metadata={
+                "persona": active_persona.name,
+                "persona_traits": active_persona.traits,
+            },
         )
