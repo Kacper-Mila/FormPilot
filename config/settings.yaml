@@ -2,6 +2,16 @@ app:
     name: FormPilot
     log_level: INFO
     strict_mode: false
+cleaning:
+    drop_timestamp_columns: true
+    timestamp_patterns:
+        - timestamp
+        - czas
+        - data
+        - godzina
+        - submitted_at
+        - submission_time
+        - Sygnatura czasowa
 paths:
     csv_path: resources/form-data-set.csv
     data_dir: data
