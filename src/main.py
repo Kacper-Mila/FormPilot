@@ -12,6 +12,7 @@ import yaml
 from data_cleaner import clean_dataframe, save_cleaned_csv
 from data_loader import load_csv
 from logger import setup_logging
+from schema_detector import detect_schema, export_schema
 
 
 def load_settings(config_path: str | Path) -> dict[str, Any]:
@@ -68,14 +69,19 @@ def main(argv: list[str] | None = None) -> int:
     cleaned_output = settings.get("paths", {}).get(
         "cleaned_data", "data/cleaned_surveys.csv"
     )
+    schema_output = settings.get("paths", {}).get("schema_export", "data/schema.json")
 
     if csv_path:
         logger.info("Loading CSV data from %s", csv_path)
         dataframe = load_csv(csv_path)
         cleaned = clean_dataframe(dataframe)
         saved_path = save_cleaned_csv(cleaned, cleaned_output)
+        schema = detect_schema(cleaned)
+        schema_path = export_schema(schema, schema_output)
         logger.info("Cleaned dataset saved to %s", saved_path)
+        logger.info("Schema exported to %s", schema_path)
         print(f"Cleaned CSV generated at: {saved_path}")
+        print(f"Schema JSON generated at: {schema_path}")
     else:
         logger.info("No CSV provided; skipping Phase 2 cleaning flow")
         print("FormPilot bootstrap is ready. Provide --csv to run data cleaning.")
