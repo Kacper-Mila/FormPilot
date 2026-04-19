@@ -20,3 +20,8 @@ paths:
     logs_dir: logs
     schema_export: data/schema.json
     model_export: data/probability_model.json
+persona:
+    list_personas: false
+    generate_response: false
+    mode: weighted
+    seed: null
