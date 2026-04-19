@@ -38,16 +38,26 @@ def clean_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
 
     cleaned = dataframe.copy()
     cleaned.columns = make_unique_columns([str(column) for column in cleaned.columns])
-    cleaned = cleaned.replace({"": pd.NA, " ": pd.NA, "  ": pd.NA})
+
     for column in cleaned.columns:
         if (
             pd.api.types.is_string_dtype(cleaned[column])
             or cleaned[column].dtype == object
         ):
-            cleaned[column] = cleaned[column].map(
-                lambda value: value.strip() if isinstance(value, str) else value
-            )
+            cleaned[column] = cleaned[column].map(_normalize_cell_value)
     return cleaned
+
+
+def _normalize_cell_value(value: object) -> object:
+    """Normalize text cells while keeping non-string values unchanged."""
+
+    if not isinstance(value, str):
+        return value
+
+    normalized = re.sub(r"\s+", " ", value.strip())
+    if normalized == "":
+        return pd.NA
+    return normalized
 
 
 def save_cleaned_csv(dataframe: pd.DataFrame, output_path: str | Path) -> Path:

@@ -25,6 +25,21 @@ def _detect_delimiter(sample: str) -> str | None:
     return dialect.delimiter
 
 
+def _read_csv_with_fallback(
+    path: Path, encoding: str, delimiter: str | None
+) -> pd.DataFrame:
+    """Read CSV using either detected delimiter or parser-level auto detection."""
+
+    read_kwargs: dict[str, object] = {"encoding": encoding}
+    if delimiter is not None:
+        read_kwargs["sep"] = delimiter
+    else:
+        # Let pandas infer separator when sniffer cannot decide.
+        read_kwargs["sep"] = None
+        read_kwargs["engine"] = "python"
+    return pd.read_csv(path, **read_kwargs)
+
+
 def load_csv(
     file_path: str | Path, encodings: Iterable[str] = DEFAULT_ENCODINGS
 ) -> pd.DataFrame:
@@ -39,7 +54,9 @@ def load_csv(
         try:
             sample = path.read_text(encoding=encoding, errors="strict")[:4096]
             delimiter = _detect_delimiter(sample)
-            return pd.read_csv(path, encoding=encoding, sep=delimiter)
+            return _read_csv_with_fallback(
+                path=path, encoding=encoding, delimiter=delimiter
+            )
         except Exception as exc:  # pragma: no cover - fallback path
             last_error = exc
 
