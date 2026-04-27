@@ -57,9 +57,9 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pytest -q
-mypy src || true
-ruff check . || true
-black --check . || true
+mypy src
+ruff check .
+black --check .
 ```
 
 Notes for agents
