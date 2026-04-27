@@ -10,8 +10,7 @@ and deliver a working, tested project. Follow these stages in order.
 
 1. Plan
 
-- Review the project goals, `resources/project_overview_full.md`, and
-  the current repo state.
+- Review the project goals and the current repo state.
 - Create a short implementation plan with checkpoints and acceptance
   criteria for each change.
 - Open an issue or create a feature branch for the work and list the

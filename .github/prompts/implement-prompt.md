@@ -64,5 +64,4 @@ Constraints and best practices
 
 - Keep changes minimal and focused.
 - Do not alter unrelated modules or reformats across many files.
-- Preserve Polish text and CSV handling rules from
-  `resources/project_overview_full.md`.
+- Preserve Polish text and Unicode-safe CSV handling throughout.
