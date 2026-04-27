@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, cast
 import json
 import math
 
@@ -78,11 +78,35 @@ def _association_score(parent: pd.Series, target: pd.Series) -> float:
     if total_count <= 1:
         return 0.0
 
-    parent_prob = (combined["parent"].value_counts() / total_count).to_dict()
-    target_prob = (combined["target"].value_counts() / total_count).to_dict()
-    joint_prob = (
-        combined.groupby(["parent", "target"]).size().div(total_count).to_dict()
+    raw_parent_prob = (combined["parent"].value_counts() / total_count).to_dict()
+    parent_prob: dict[str, float] = {
+        str(key): float(value) for key, value in raw_parent_prob.items()
+    }
+
+    raw_target_prob = (combined["target"].value_counts() / total_count).to_dict()
+    target_prob: dict[str, float] = {
+        str(key): float(value) for key, value in raw_target_prob.items()
+    }
+
+    raw_joint_prob = cast(
+        Mapping[object, object],
+        combined.groupby(["parent", "target"]).size().div(total_count).to_dict(),
     )
+    joint_prob: dict[tuple[str, str], float] = {}
+    for key, value in raw_joint_prob.items():
+        if not isinstance(key, tuple):
+            continue
+
+        tuple_key = cast(tuple[object, ...], key)
+        if len(tuple_key) != 2:
+            continue
+
+        parent_value = str(tuple_key[0])
+        target_value = str(tuple_key[1])
+        converted = _as_float(value)
+        if converted is None:
+            continue
+        joint_prob[(parent_value, target_value)] = converted
 
     mutual_information = 0.0
     for (parent_value, target_value), p_xy in joint_prob.items():
@@ -211,48 +235,109 @@ def save_probability_model(model: ProbabilityModel, output_path: str | Path) -> 
     return path
 
 
+def _as_float(value: object) -> float | None:
+    """Convert loosely-typed JSON values to float when possible."""
+
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
 def load_probability_model(input_path: str | Path) -> ProbabilityModel:
     """Load a previously saved probability model."""
 
     path = Path(input_path)
-    data = json.loads(path.read_text(encoding="utf-8"))
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, Mapping):
+        loaded = {}
 
-    raw_dependencies = data.get("dependencies", {})
+    data = cast(Mapping[object, object], loaded)
+
+    raw_dependencies_obj = data.get("dependencies", {})
+    if not isinstance(raw_dependencies_obj, Mapping):
+        raw_dependencies_obj = {}
+    raw_dependencies = cast(Mapping[object, object], raw_dependencies_obj)
+
     parsed_dependencies: dict[str, dict[str, dict[str, dict[str, float]]]] = {}
-    for target_column, parent_map in raw_dependencies.items():
-        if not isinstance(parent_map, dict):
+    for target_column_obj, parent_map_obj in raw_dependencies.items():
+        if not isinstance(parent_map_obj, Mapping):
             continue
+
+        target_column = str(target_column_obj)
+        parent_map = cast(Mapping[object, object], parent_map_obj)
         normalized_parent_map: dict[str, dict[str, dict[str, float]]] = {}
-        for parent_column, parent_values in parent_map.items():
-            if not isinstance(parent_values, dict):
+        for parent_column, parent_values_obj in parent_map.items():
+            if not isinstance(parent_values_obj, Mapping):
                 continue
 
+            parent_values = cast(Mapping[object, object], parent_values_obj)
+
             normalized_parent_values: dict[str, dict[str, float]] = {}
-            for parent_value, distribution in parent_values.items():
-                if isinstance(distribution, dict):
-                    normalized_parent_values[str(parent_value)] = {
-                        str(value): float(probability)
-                        for value, probability in distribution.items()
-                    }
+            for parent_value, distribution_obj in parent_values.items():
+                if isinstance(distribution_obj, Mapping):
+                    distribution = cast(Mapping[object, object], distribution_obj)
+                    parsed_distribution: dict[str, float] = {}
+                    for value, probability in distribution.items():
+                        converted = _as_float(probability)
+                        if converted is None:
+                            continue
+                        parsed_distribution[str(value)] = converted
+                    normalized_parent_values[str(parent_value)] = parsed_distribution
                 else:
                     # Backward compatibility for older model shape.
                     normalized_parent_values[str(parent_value)] = {}
 
             normalized_parent_map[str(parent_column)] = normalized_parent_values
 
-        parsed_dependencies[str(target_column)] = normalized_parent_map
+        parsed_dependencies[target_column] = normalized_parent_map
+
+    raw_marginals_obj = data.get("marginals", {})
+    if not isinstance(raw_marginals_obj, Mapping):
+        raw_marginals_obj = {}
+
+    parsed_marginals: dict[str, dict[str, float]] = {}
+    for column_obj, values_obj in cast(
+        Mapping[object, object], raw_marginals_obj
+    ).items():
+        if not isinstance(values_obj, Mapping):
+            continue
+
+        parsed_values: dict[str, float] = {}
+        for value_obj, probability_obj in cast(
+            Mapping[object, object], values_obj
+        ).items():
+            converted = _as_float(probability_obj)
+            if converted is None:
+                continue
+            parsed_values[str(value_obj)] = converted
+
+        parsed_marginals[str(column_obj)] = parsed_values
+
+    raw_dependency_rules_obj = data.get("dependency_rules", {})
+    if not isinstance(raw_dependency_rules_obj, Mapping):
+        raw_dependency_rules_obj = {}
+
+    parsed_dependency_rules: dict[str, list[dict[str, Any]]] = {}
+    for target_obj, rules_obj in cast(
+        Mapping[object, object], raw_dependency_rules_obj
+    ).items():
+        if not isinstance(rules_obj, list):
+            continue
+
+        typed_rules_obj = cast(list[object], rules_obj)
+        parsed_dependency_rules[str(target_obj)] = [
+            cast(dict[str, Any], rule)
+            for rule in typed_rules_obj
+            if isinstance(rule, dict)
+        ]
 
     return ProbabilityModel(
-        marginals={
-            str(column): {
-                str(value): float(probability) for value, probability in values.items()
-            }
-            for column, values in data.get("marginals", {}).items()
-        },
+        marginals=parsed_marginals,
         dependencies=parsed_dependencies,
-        dependency_rules={
-            str(target): list(rules)
-            for target, rules in data.get("dependency_rules", {}).items()
-            if isinstance(rules, list)
-        },
+        dependency_rules=parsed_dependency_rules,
     )

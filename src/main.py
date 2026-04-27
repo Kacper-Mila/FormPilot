@@ -109,11 +109,12 @@ def main(argv: list[str] | None = None) -> int:
         cleaning_settings.get("drop_timestamp_columns", False)
     )
     timestamp_patterns_raw = cleaning_settings.get("timestamp_patterns", [])
-    timestamp_patterns = (
-        [str(pattern) for pattern in timestamp_patterns_raw]
-        if isinstance(timestamp_patterns_raw, list)
-        else None
-    )
+    timestamp_patterns: list[str] | None
+    if isinstance(timestamp_patterns_raw, list):
+        typed_timestamp_patterns_raw = cast(list[object], timestamp_patterns_raw)
+        timestamp_patterns = [str(pattern) for pattern in typed_timestamp_patterns_raw]
+    else:
+        timestamp_patterns = None
     persona_settings = settings.get("persona", {})
 
     list_personas_enabled = args.list_personas or bool(

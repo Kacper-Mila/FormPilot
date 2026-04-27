@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import csv
-from typing import Iterable
+from typing import Iterable, Literal
 
 import pandas as pd
 
@@ -30,14 +30,12 @@ def _read_csv_with_fallback(
 ) -> pd.DataFrame:
     """Read CSV using either detected delimiter or parser-level auto detection."""
 
-    read_kwargs: dict[str, object] = {"encoding": encoding}
     if delimiter is not None:
-        read_kwargs["sep"] = delimiter
-    else:
-        # Let pandas infer separator when sniffer cannot decide.
-        read_kwargs["sep"] = None
-        read_kwargs["engine"] = "python"
-    return pd.read_csv(path, **read_kwargs)
+        return pd.read_csv(path, encoding=encoding, sep=delimiter)
+
+    # Let pandas infer separator when sniffer cannot decide.
+    engine: Literal["python"] = "python"
+    return pd.read_csv(path, encoding=encoding, sep=None, engine=engine)
 
 
 def load_csv(
