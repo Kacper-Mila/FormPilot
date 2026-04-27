@@ -41,9 +41,13 @@ repository todo list as you progress.
 
 - Address issues found during testing: fix code, add tests, or
   document known limitations.
-- Run type checking and linters: `mypy src`, `ruff check .`,
-  `black --check .` and fix reported issues.
-- Run tests again locally and ensure all green.
+- If the tooling is installed and configured in this repository, run type
+  checking and linters: `mypy src`, `ruff check .`, `black --check .`,
+  and fix reported issues.
+- If any of these tools are unavailable or unconfigured, skip that check
+  and explicitly report it as skipped due to missing tooling/configuration
+  rather than failing the workflow.
+- Run tests again locally and ensure all executed checks are green.
 - Mark `Refactor and check errors` as completed.
 
 5. Test the whole project again
