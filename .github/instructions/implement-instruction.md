@@ -33,7 +33,7 @@ and deliver a working, tested project. Follow these stages in order.
 4. Refactor and check for errors
 
 - Fix style and structural issues discovered during testing.
-- Run static checks: type checking (`mypy`), linters (`ruff`/`flake8`),
+- Run static checks: type checking (`mypy`), linter (`ruff`),
   and formatter (`black`).
 - Add or extend tests to cover newly discovered edge cases.
 
@@ -56,9 +56,9 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pytest -q
-mypy src || true
-ruff check . || true
-black --check . || true
+mypy src
+ruff check .
+black --check .
 ```
 
 Notes for agents
