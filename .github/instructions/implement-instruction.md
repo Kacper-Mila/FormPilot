@@ -65,4 +65,4 @@ Notes for agents
 
 - Use the companion prompt at `.github/prompts/implement-prompt.md` to
   execute the implement workflow interactively.
-- Update the repository todo list with each major milestone.
+- Use the companion prompt to run each stage and report results at each checkpoint.

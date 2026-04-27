@@ -8,15 +8,12 @@ Command: implement
 Prompt (for agent use):
 
 You are executing the `implement` workflow. Perform these steps and report
-results at each checkpoint. Use `apply_patch` to edit files and update the
-repository todo list as you progress.
+results at each checkpoint. Use `apply_patch` to edit files.
 
 1. Plan (record results)
 
 - Summarize the goal for this implementation task in 3–6 bullets.
 - List changed files you expect to touch and acceptance criteria.
-- Mark the todo entry `Plan implementation steps` in the repo TODOs as
-  in-progress.
 
 2. Implement
 
@@ -25,7 +22,6 @@ repository todo list as you progress.
 - Add or update tests that verify new behavior.
 - After implementing, produce a brief changelog: files added/modified and
   short rationale for each change.
-- Mark the todo entry `Implement code changes` as completed.
 
 3. Test the whole project
 
@@ -35,7 +31,6 @@ repository todo list as you progress.
 - Upload required artifacts (test logs, sample generated row) in the
   agent response.
 - If tests fail, stop and move to step 4.
-- Mark `Test the whole project` as completed only when tests pass.
 
 4. Refactor and check for errors
 
@@ -48,14 +43,12 @@ repository todo list as you progress.
   and explicitly report it as skipped due to missing tooling/configuration
   rather than failing the workflow.
 - Run tests again locally and ensure all executed checks are green.
-- Mark `Refactor and check errors` as completed.
 
 5. Test the whole project again
 
 - Repeat `pytest -q` and manual smoke tests.
 - Produce a final short report: the tasks completed, tests passing,
-  commands used, and any remaining risks or TODOs.
-- Mark `Test again and finalize` as completed.
+  commands used, and any remaining risks.
 
 Output requirements
 
