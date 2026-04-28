@@ -13,7 +13,6 @@ import pandas as pd
 _DEFAULT_TIMESTAMP_PATTERNS: tuple[str, ...] = (
     "timestamp",
     "time_stamp",
-    "czas",
     "data",
     "godzina",
     "datetime",

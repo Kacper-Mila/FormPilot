@@ -6,7 +6,6 @@ cleaning:
     drop_timestamp_columns: true
     timestamp_patterns:
         - timestamp
-        - czas
         - data
         - godzina
         - submitted_at
