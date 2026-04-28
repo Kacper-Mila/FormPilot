@@ -29,6 +29,10 @@ def _default_sections() -> list["FormSection"]:
     return []
 
 
+def _default_questions() -> list["FormQuestion"]:
+    return []
+
+
 def _normalize_whitespace(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
@@ -200,7 +204,7 @@ class ParsedFormSchema:
     form_title: str
     form_url: str
     sections: list[FormSection] = field(default_factory=_default_sections)
-    questions: list[FormQuestion] = field(default_factory=_default_options)
+    questions: list[FormQuestion] = field(default_factory=_default_questions)
 
     def to_dict(self) -> dict[str, Any]:
         return {

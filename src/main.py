@@ -135,11 +135,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     persona_mode = args.persona_mode or configured_mode
 
+    from schema_detector import SurveySchema
+
     seed_value = args.seed
     if seed_value is None and persona_settings.get("seed") is not None:
         seed_value = int(persona_settings.get("seed"))
 
     probability_model: ProbabilityModel | None = None
+    schema: SurveySchema | None = None
 
     if csv_path:
         logger.info("Loading CSV data from %s", csv_path)
@@ -162,6 +165,27 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Probability model JSON generated at: {model_path}")
     else:
         logger.info("No CSV provided; skipping Phase 2 cleaning flow")
+        # Attempt to load schema if it exists so mapping can still run
+        schema_path = Path(schema_output)
+        if schema_path.exists():
+            with schema_path.open("r", encoding="utf-8") as f:
+                schema_dict = json.load(f)
+            from schema_detector import SurveyQuestion, FieldType
+
+            questions = [
+                SurveyQuestion(
+                    question_id=q["question_id"],
+                    column_name=q["column_name"],
+                    question_text=q.get("question_text", q["column_name"]),
+                    field_type=FieldType(q["field_type"]),
+                    allowed_values=q.get("allowed_values", []),
+                    optional=q.get("optional", False),
+                    dependency_metadata=q.get("dependency_metadata", {}),
+                )
+                for q in schema_dict.get("questions", [])
+            ]
+            schema = SurveySchema(questions=questions)
+            logger.info("Loaded dataset schema from %s", schema_path)
         print("FormPilot bootstrap is ready. Provide --csv to run data cleaning.")
 
     persona_generator = PersonaGenerator(random_seed=seed_value)
@@ -213,6 +237,16 @@ def main(argv: list[str] | None = None) -> int:
             len(parsed_form.sections),
         )
         print(f"Parsed form schema generated at: {form_schema_path}")
+
+        if schema:
+            from form_mapper import match_survey_to_form, export_mapping
+
+            mapping_output = settings.get("paths", {}).get(
+                "mapping_export", "data/form_mapping.json"
+            )
+            mapping_table = match_survey_to_form(schema, parsed_form.questions)
+            export_mapping(mapping_table, mapping_output)
+            print(f"Form mapping JSON generated at: {mapping_output}")
 
     return 0
 
