@@ -12,6 +12,7 @@ import yaml
 
 from data_cleaner import clean_dataframe, save_cleaned_csv
 from data_loader import load_csv
+from form_parser import GoogleFormParser
 from logger import setup_logging
 from persona_generator import PersonaGenerator
 from probability_model import (
@@ -104,6 +105,9 @@ def main(argv: list[str] | None = None) -> int:
     model_output = settings.get("paths", {}).get(
         "model_export", "data/probability_model.json"
     )
+    form_schema_output = settings.get("paths", {}).get(
+        "form_schema_export", "data/form_schema.json"
+    )
     cleaning_settings = settings.get("cleaning", {})
     drop_timestamp_columns = bool(
         cleaning_settings.get("drop_timestamp_columns", False)
@@ -192,6 +196,23 @@ def main(argv: list[str] | None = None) -> int:
 
         print("Generated response:")
         print(json.dumps(generated.to_dict(), ensure_ascii=False, indent=2))
+
+    if args.form:
+        parser = GoogleFormParser(headless=True, logger=logger)
+        parsed_form = parser.parse_form(args.form)
+        form_schema_path = Path(form_schema_output)
+        form_schema_path.parent.mkdir(parents=True, exist_ok=True)
+        form_schema_path.write_text(
+            json.dumps(parsed_form.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info("Parsed form schema exported to %s", form_schema_path)
+        logger.info(
+            "Parsed %d form questions across %d section(s)",
+            len(parsed_form.questions),
+            len(parsed_form.sections),
+        )
+        print(f"Parsed form schema generated at: {form_schema_path}")
 
     return 0
 
