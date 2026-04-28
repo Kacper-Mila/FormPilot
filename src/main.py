@@ -143,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
 
     probability_model: ProbabilityModel | None = None
     schema: SurveySchema | None = None
+    generator: ResponseGenerator | None = None
 
     if csv_path:
         logger.info("Loading CSV data from %s", csv_path)
@@ -247,6 +248,29 @@ def main(argv: list[str] | None = None) -> int:
             mapping_table = match_survey_to_form(schema, parsed_form.questions)
             export_mapping(mapping_table, mapping_output)
             print(f"Form mapping JSON generated at: {mapping_output}")
+
+            if args.count > 0:
+                print(f"Starting {args.count} submission(s)...")
+                from google_form_filler import GoogleFormFiller
+                from submission_runner import SubmissionRunner
+
+                # We might not have created a generator if --generate-response
+                # was not passed, but we need it for submissions.
+                if generator is None:
+                    if probability_model is None:
+                        probability_model = load_probability_model(Path(model_output))
+                    generator = ResponseGenerator(
+                        model=probability_model,
+                        random_seed=seed_value,
+                        persona_generator=persona_generator,
+                    )
+
+                filler = GoogleFormFiller(headless=False)
+                runner = SubmissionRunner(generator, filler)
+
+                runs = runner.run(args.form, args.count, mapping_table.mappings)
+                successes = sum(1 for r in runs if r.fill_result.success)
+                print(f"Completed: {successes} / {args.count} submitted successfully.")
 
     return 0
 
