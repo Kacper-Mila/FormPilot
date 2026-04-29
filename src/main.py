@@ -167,6 +167,12 @@ def main(argv: list[str] | None = None) -> int:
         cli_parser.error("--timeout-ms must be greater than 0")
     if action_delay_ms < 0:
         cli_parser.error("--action-delay-ms must be 0 or greater")
+    max_submission_retries_raw = automation_settings.get("max_submission_retries", 0)
+    max_submission_retries = (
+        0 if max_submission_retries_raw is None else int(max_submission_retries_raw)
+    )
+    if max_submission_retries < 0:
+        cli_parser.error("automation.max_submission_retries must be 0 or greater")
 
     cleaned_output = settings.get("paths", {}).get(
         "cleaned_data", "data/cleaned_surveys.csv"
@@ -350,6 +356,10 @@ def main(argv: list[str] | None = None) -> int:
                     filler,
                     output_csv_path=generated_responses_output,
                     stop_on_error=bool(automation_settings.get("stop_on_error", False)),
+                    retry_failed_submissions=bool(
+                        automation_settings.get("retry_failed_submissions", False)
+                    ),
+                    max_submission_retries=max_submission_retries,
                 )
 
                 runs = runner.run(args.form, args.count, mapping_table.mappings)

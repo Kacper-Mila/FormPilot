@@ -37,11 +37,15 @@ class SubmissionRunner:
         form_filler: GoogleFormFiller,
         output_csv_path: str | Path | None = None,
         stop_on_error: bool = False,
+        retry_failed_submissions: bool = False,
+        max_submission_retries: int = 0,
     ) -> None:
         self.response_generator = response_generator
         self.form_filler = form_filler
         self.output_csv_path = Path(output_csv_path) if output_csv_path else None
         self.stop_on_error = stop_on_error
+        self.retry_failed_submissions = retry_failed_submissions
+        self.max_submission_retries = max(0, int(max_submission_retries))
 
     def _clear_output_csv(self) -> None:
         """Clear generated responses from previous submission batches."""
@@ -87,6 +91,63 @@ class SubmissionRunner:
                 "Failed to save response %s to CSV: %s", response.response_id, e
             )
 
+    def _submit_with_retries(
+        self, form_url: str, response: GeneratedResponse, mappings: list[MappingEntry]
+    ) -> SubmissionRun:
+        """Submit one generated response, retrying failed fill attempts if enabled."""
+
+        attempts_allowed = 1
+        if self.retry_failed_submissions:
+            attempts_allowed += self.max_submission_retries
+
+        fill_result: FillResult | None = None
+        for attempt in range(1, attempts_allowed + 1):
+            if attempt > 1:
+                logger.info(
+                    "Retrying response %s (attempt %d of %d)",
+                    response.response_id,
+                    attempt,
+                    attempts_allowed,
+                )
+
+            try:
+                fill_result = self.form_filler.fill_and_submit(
+                    form_url, response, mappings
+                )
+            except Exception as e:
+                logger.exception(
+                    "Submission attempt %d of %d raised for response %s: %s",
+                    attempt,
+                    attempts_allowed,
+                    response.response_id,
+                    e,
+                )
+                fill_result = FillResult(success=False, message=str(e))
+
+            if fill_result.success:
+                return SubmissionRun(
+                    response=response,
+                    fill_result=fill_result,
+                    metadata={"attempts": attempt},
+                )
+
+            logger.error(
+                "Submission attempt %d of %d failed for response %s: %s",
+                attempt,
+                attempts_allowed,
+                response.response_id,
+                fill_result.message,
+            )
+
+        if fill_result is None:
+            raise RuntimeError("Submission did not produce a fill result.")
+
+        return SubmissionRun(
+            response=response,
+            fill_result=fill_result,
+            metadata={"attempts": attempts_allowed},
+        )
+
     def run(
         self, form_url: str, count: int, mappings: list[MappingEntry]
     ) -> list[SubmissionRun]:
@@ -104,10 +165,11 @@ class SubmissionRunner:
                     # Save generated row locally for traceability
                     self._save_response(response)
 
-                    result = self.form_filler.fill_and_submit(
+                    run_result = self._submit_with_retries(
                         form_url, response, mappings
                     )
-                    results.append(SubmissionRun(response=response, fill_result=result))
+                    results.append(run_result)
+                    result = run_result.fill_result
 
                     if not result.success:
                         logger.error("Run %d failed: %s", i + 1, result.message)
