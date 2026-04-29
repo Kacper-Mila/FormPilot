@@ -174,6 +174,7 @@ python src/main.py \
     --csv data/input_surveys.csv \
     --form "https://docs.google.com/forms/..." \
     --count 25 \
+    --headless \
     --config config/settings.yaml
 ```
 
@@ -183,6 +184,84 @@ python src/main.py \
 -   `--form` : Google Form URL
 -   `--count` : number of submissions
 -   `--config` : YAML config path
+-   `--headless` : run Playwright without a visible browser window
+-   `--headed` : force a visible browser window for debugging
+-   `--timeout-ms` : Playwright page/action timeout in milliseconds
+-   `--action-delay-ms` : small delay after field actions; lower is faster
+-   `--list-personas` : print available personas
+-   `--generate-response` : print one generated sample response
+-   `--persona-mode` : choose `weighted` or `uniform` persona selection
+-   `--seed` : set a random seed for reproducible generation
+
+Terminal arguments override matching values from `config/settings.yaml` for
+that run. For example, `--headless` overrides `automation.headless`, and
+`--csv` overrides `paths.csv_path`.
+
+### Settings
+
+`app.name` is the application name used for configuration readability.
+
+`app.log_level` controls log verbosity. Common values are `DEBUG`, `INFO`,
+`WARNING`, and `ERROR`.
+
+`automation.headless` controls whether Playwright runs without a visible browser
+window. It is overridden by `--headless` or `--headed`.
+
+`automation.timeout_ms` is the browser/page timeout in milliseconds. It is
+overridden by `--timeout-ms`.
+
+`automation.action_delay_ms` is the small pause after field actions. Lower
+values are faster; higher values can help with slow forms. It is overridden by
+`--action-delay-ms`.
+
+`automation.retry_failed_submissions` enables retrying the same generated
+response when a form submission attempt fails.
+
+`automation.max_submission_retries` sets how many extra attempts are allowed
+after the first failed attempt. For example, `1` means one retry, so two total
+attempts.
+
+`automation.stop_on_error` stops the batch after a response still fails once all
+configured retries are exhausted.
+
+`cleaning.drop_timestamp_columns` removes timestamp-like CSV columns before
+schema/model generation.
+
+`cleaning.timestamp_patterns` lists case-insensitive column-name fragments that
+should be treated as timestamps.
+
+`paths.csv_path` is the default input CSV path. It is overridden by `--csv`.
+
+`paths.data_dir` is the project data folder reference.
+
+`paths.cleaned_data` is where the cleaned CSV is written.
+
+`paths.generated_responses` is where generated responses from the current batch
+are written. This file is cleared at the start of each submission run.
+
+`paths.logs_dir` is where log files are written.
+
+`paths.schema_export` is where the detected survey schema is written, and where
+the CLI looks for an existing schema if no CSV is supplied.
+
+`paths.model_export` is where the probability model is written, and where it is
+loaded from when submissions run without rebuilding from CSV.
+
+`paths.form_schema_export` is where the parsed Google Form schema is written.
+
+`paths.mapping_export` is where the schema-to-form mapping table is written.
+
+`persona.list_personas` prints available personas when set to `true`.
+`--list-personas` can also enable this for one run.
+
+`persona.generate_response` prints one generated sample response when set to
+`true`. `--generate-response` can also enable this for one run.
+
+`persona.mode` chooses persona selection mode: `weighted` or `uniform`. It is
+overridden by `--persona-mode`.
+
+`persona.seed` sets the default random seed. `null` means non-deterministic
+sampling. It is overridden by `--seed`.
 
 ------------------------------------------------------------------------
 

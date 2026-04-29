@@ -1,16 +1,17 @@
 app:
     name: FormPilot
     log_level: INFO
-    strict_mode: false
+automation:
+    headless: false
+    timeout_ms: 15000
+    action_delay_ms: 50
+    retry_failed_submissions: true
+    max_submission_retries: 1
+    stop_on_error: false
 cleaning:
     drop_timestamp_columns: true
     timestamp_patterns:
         - timestamp
-        - data
-        - godzina
-        - submitted_at
-        - submission_time
-        - Sygnatura czasowa
 paths:
     csv_path: resources/form-data-set.csv
     data_dir: data
@@ -19,6 +20,8 @@ paths:
     logs_dir: logs
     schema_export: data/schema.json
     model_export: data/probability_model.json
+    form_schema_export: data/form_schema.json
+    mapping_export: data/form_mapping.json
 persona:
     list_personas: false
     generate_response: false
