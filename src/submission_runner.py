@@ -43,6 +43,18 @@ class SubmissionRunner:
         self.output_csv_path = Path(output_csv_path) if output_csv_path else None
         self.stop_on_error = stop_on_error
 
+    def _clear_output_csv(self) -> None:
+        """Clear generated responses from previous submission batches."""
+        if not self.output_csv_path:
+            return
+
+        try:
+            self.output_csv_path.parent.mkdir(parents=True, exist_ok=True)
+            self.output_csv_path.write_text("", encoding="utf-8")
+            logger.info("Cleared generated responses CSV: %s", self.output_csv_path)
+        except Exception as e:
+            logger.error("Failed to clear generated responses CSV: %s", e)
+
     def _save_response(self, response: GeneratedResponse) -> None:
         """Save a generated response to the local CSV file."""
         if not self.output_csv_path:
@@ -50,6 +62,7 @@ class SubmissionRunner:
 
         self.output_csv_path.parent.mkdir(parents=True, exist_ok=True)
         file_exists = self.output_csv_path.exists()
+        file_is_empty = not file_exists or self.output_csv_path.stat().st_size == 0
 
         try:
             with self.output_csv_path.open("a", encoding="utf-8", newline="") as f:
@@ -59,7 +72,7 @@ class SubmissionRunner:
                 )
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
 
-                if not file_exists:
+                if file_is_empty:
                     writer.writeheader()
 
                 row_data = {
@@ -79,6 +92,7 @@ class SubmissionRunner:
     ) -> list[SubmissionRun]:
         """Generate, fill and map count times."""
         results: list[SubmissionRun] = []
+        self._clear_output_csv()
         with self.form_filler:
             for i in range(count):
                 logger.info("Starting run %d of %d", i + 1, count)
