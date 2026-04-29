@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import json
 import logging
+import re
 from typing import Any
 
 from rapidfuzz import fuzz
@@ -64,8 +65,26 @@ class MappingTable:
 
 
 def _normalize_for_matching(text: str) -> str:
-    """Normalize text for fuzzy matching (lowercase, strip whitespace)."""
-    return text.strip().casefold()
+    """Normalize text for fuzzy matching across schema and form wording."""
+
+    normalized = text.casefold().replace("_", " ")
+    normalized = re.sub(r"[/\\|]+", " ", normalized)
+
+    # CSV column normalization can collapse useful separators from Google Forms
+    # labels. Restore the common merged tokens before fuzzy scoring.
+    normalized = re.sub(r"(?<=mammografii)(?=usg\b)", " ", normalized)
+    normalized = re.sub(r"(?<=mammografia)(?=usg\b)", " ", normalized)
+    normalized = re.sub(r"(?<=widocznych)(?=wyczuwalnych\b)", " ", normalized)
+    normalized = re.sub(r"(?<=pani)(?=pan(?:a)?\b)", " ", normalized)
+    normalized = re.sub(r"(?<=pana)(?=pani\b)", " ", normalized)
+    normalized = re.sub(
+        r"\b([a-ząćęłńóśźż]+?ła)([a-ząćęłńóśźż]+?ł)\b",
+        r"\1 \2",
+        normalized,
+    )
+
+    normalized = re.sub(r"[^0-9a-ząćęłńóśźż%]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
 
 
 def _compute_text_similarity(text_a: str, text_b: str) -> float:
