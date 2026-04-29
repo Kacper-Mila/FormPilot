@@ -7,6 +7,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlparse
 
 import yaml
 
@@ -47,13 +48,39 @@ def load_settings(config_path: str | Path) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     """Create the CLI parser."""
 
-    parser = argparse.ArgumentParser(description="FormPilot project skeleton")
+    parser = argparse.ArgumentParser(description="Run the FormPilot survey pipeline")
     parser.add_argument(
         "--config", default="config/settings.yaml", help="Path to the YAML config file"
     )
     parser.add_argument("--csv", default=None, help="Path to the input CSV file")
     parser.add_argument("--form", default=None, help="Google Form URL")
     parser.add_argument("--count", type=int, default=1, help="Number of submissions")
+    browser_group = parser.add_mutually_exclusive_group()
+    browser_group.add_argument(
+        "--headless",
+        dest="headless",
+        action="store_true",
+        default=None,
+        help="Run Playwright without opening a visible browser window",
+    )
+    browser_group.add_argument(
+        "--headed",
+        dest="headless",
+        action="store_false",
+        help="Run Playwright with a visible browser window for debugging",
+    )
+    parser.add_argument(
+        "--timeout-ms",
+        type=int,
+        default=None,
+        help="Playwright page/action timeout in milliseconds",
+    )
+    parser.add_argument(
+        "--action-delay-ms",
+        type=int,
+        default=None,
+        help="Small pause after field actions; lower is faster, higher is safer",
+    )
     parser.add_argument(
         "--list-personas",
         action="store_true",
@@ -79,17 +106,31 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _validate_form_url(form_url: str) -> None:
+    parsed = urlparse(form_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("--form must be a valid http(s) URL")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run CLI bootstrap and optionally execute CSV loading/cleaning flow."""
 
-    args = build_parser().parse_args(argv)
-    settings = load_settings(args.config)
+    cli_parser = build_parser()
+    args = cli_parser.parse_args(argv)
+    try:
+        settings = load_settings(args.config)
+    except (FileNotFoundError, ValueError) as exc:
+        cli_parser.error(str(exc))
+
+    if args.count < 0:
+        cli_parser.error("--count must be 0 or greater")
+
     log_dir = settings.get("paths", {}).get("logs_dir", "logs")
     log_level_name = str(settings.get("app", {}).get("log_level", "INFO")).upper()
     log_level = getattr(logging, log_level_name, logging.INFO)
     logger = setup_logging(log_dir=log_dir, level=log_level)
 
-    logger.info("FormPilot skeleton initialized")
+    logger.info("FormPilot CLI initialized")
     logger.info("Config loaded from %s", args.config)
     if args.csv:
         logger.info("CSV argument received: %s", args.csv)
@@ -98,6 +139,35 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("Submission count requested: %s", args.count)
 
     csv_path = args.csv or settings.get("paths", {}).get("csv_path")
+    if csv_path and not Path(csv_path).exists():
+        cli_parser.error(f"CSV file not found: {csv_path}")
+    if args.form:
+        try:
+            _validate_form_url(args.form)
+        except ValueError as exc:
+            cli_parser.error(str(exc))
+
+    automation_settings = settings.get("automation", {})
+    headless = (
+        bool(automation_settings.get("headless", False))
+        if args.headless is None
+        else bool(args.headless)
+    )
+    timeout_ms = (
+        int(automation_settings.get("timeout_ms", 15000))
+        if args.timeout_ms is None
+        else args.timeout_ms
+    )
+    action_delay_ms = (
+        int(automation_settings.get("action_delay_ms", 50))
+        if args.action_delay_ms is None
+        else args.action_delay_ms
+    )
+    if timeout_ms <= 0:
+        cli_parser.error("--timeout-ms must be greater than 0")
+    if action_delay_ms < 0:
+        cli_parser.error("--action-delay-ms must be 0 or greater")
+
     cleaned_output = settings.get("paths", {}).get(
         "cleaned_data", "data/cleaned_surveys.csv"
     )
@@ -107,6 +177,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     form_schema_output = settings.get("paths", {}).get(
         "form_schema_export", "data/form_schema.json"
+    )
+    generated_responses_output = settings.get("paths", {}).get(
+        "generated_responses", "data/generated_responses.csv"
     )
     cleaning_settings = settings.get("cleaning", {})
     drop_timestamp_columns = bool(
@@ -223,8 +296,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(generated.to_dict(), ensure_ascii=False, indent=2))
 
     if args.form:
-        parser = GoogleFormParser(headless=True, logger=logger)
-        parsed_form = parser.parse_form(args.form)
+        form_parser = GoogleFormParser(
+            headless=headless, timeout_ms=timeout_ms, logger=logger
+        )
+        parsed_form = form_parser.parse_form(args.form)
         form_schema_path = Path(form_schema_output)
         form_schema_path.parent.mkdir(parents=True, exist_ok=True)
         form_schema_path.write_text(
@@ -265,12 +340,26 @@ def main(argv: list[str] | None = None) -> int:
                         persona_generator=persona_generator,
                     )
 
-                filler = GoogleFormFiller(headless=False)
-                runner = SubmissionRunner(generator, filler)
+                filler = GoogleFormFiller(
+                    headless=headless,
+                    timeout_ms=timeout_ms,
+                    action_delay_ms=action_delay_ms,
+                )
+                runner = SubmissionRunner(
+                    generator,
+                    filler,
+                    output_csv_path=generated_responses_output,
+                    stop_on_error=bool(automation_settings.get("stop_on_error", False)),
+                )
 
                 runs = runner.run(args.form, args.count, mapping_table.mappings)
                 successes = sum(1 for r in runs if r.fill_result.success)
                 print(f"Completed: {successes} / {args.count} submitted successfully.")
+        elif args.count > 0:
+            cli_parser.error(
+                "Submissions require a survey schema. Provide --csv or configure "
+                "paths.schema_export to an existing schema JSON file."
+            )
 
     return 0
 

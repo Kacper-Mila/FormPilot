@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import cast
+from typing import Any, cast
 
-from playwright.sync_api import Locator, Page, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Locator, Page, sync_playwright
 
 from form_mapper import MappingEntry
 from response_generator import GeneratedResponse
@@ -139,321 +139,240 @@ def _mapped_answer_values(
 class GoogleFormFiller:
     """Browser automation layer for Google Forms."""
 
-    def __init__(self, headless: bool = True, timeout_ms: int = 15000) -> None:
+    def __init__(
+        self,
+        headless: bool = True,
+        timeout_ms: int = 15000,
+        action_delay_ms: int = 50,
+    ) -> None:
         self.headless = headless
         self.timeout_ms = timeout_ms
+        self.action_delay_ms = action_delay_ms
+        self._playwright_manager: Any | None = None
+        self._browser: Browser | None = None
+        self._context: BrowserContext | None = None
+
+    def __enter__(self) -> "GoogleFormFiller":
+        self.start()
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.close()
+
+    def start(self) -> None:
+        """Start a reusable Playwright browser session."""
+
+        if self._browser is not None:
+            return
+
+        self._playwright_manager = sync_playwright().start()
+        try:
+            self._browser = self._playwright_manager.chromium.launch(
+                headless=self.headless
+            )
+            self._context = self._browser.new_context(locale="pl-PL")
+        except Exception:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        """Close the reusable Playwright browser session if one is open."""
+
+        if self._context is not None:
+            self._context.close()
+            self._context = None
+        if self._browser is not None:
+            self._browser.close()
+            self._browser = None
+        if self._playwright_manager is not None:
+            self._playwright_manager.stop()
+            self._playwright_manager = None
 
     def fill_and_submit(
         self, form_url: str, response: GeneratedResponse, mappings: list[MappingEntry]
     ) -> FillResult:
         """Open the form, map answers to DOM elements, fill, and submit."""
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=self.headless)
-            context = browser.new_context(locale="pl-PL")
-            page = context.new_page()
+        started_here = self._browser is None
+        if started_here:
+            self.start()
+        if self._context is None:
+            raise RuntimeError("Playwright browser context was not initialized.")
 
-            try:
-                logger.info("Opening form: %s", form_url)
-                page.goto(form_url, timeout=self.timeout_ms)
-                page.wait_for_load_state("networkidle")
+        page = self._context.new_page()
 
-                is_last_page = False
-                page_count = 1
+        try:
+            logger.info("Opening form: %s", form_url)
+            page.goto(form_url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+            self._wait_for_form_ready(page)
 
-                while not is_last_page:
-                    logger.info("Filling page %d...", page_count)
-                    self._fill_current_page(page, response, mappings)
+            page_count = 1
+            while True:
+                logger.info("Filling page %d...", page_count)
+                self._fill_current_page(page, response, mappings)
 
-                    # Detect submit / next buttons robustly and log which is used
-                    submit_selector = (
-                        "div[role='button']:has-text('Wyślij'), "
-                        "div[role='button']:has-text('Prześlij'), "
-                        "div[role='button']:has-text('Submit')"
-                    )
-                    next_selector = (
-                        "div[role='button']:has-text('Dalej'), "
-                        "div[role='button']:has-text('Next')"
-                    )
+                submit_button = page.locator(
+                    "div[role='button']:has-text('Wyślij'), "
+                    "div[role='button']:has-text('Prześlij'), "
+                    "div[role='button']:has-text('Submit')"
+                ).first
+                next_button = page.locator(
+                    "div[role='button']:has-text('Dalej'), "
+                    "div[role='button']:has-text('Next')"
+                ).first
 
-                    btn_submit = page.locator(submit_selector).first
-                    btn_next = page.locator(next_selector).first
-
-                    submit_count = btn_submit.count()
-                    next_count = btn_next.count()
-                    logger.debug(
-                        "Button counts - submit: %d, next: %d", submit_count, next_count
-                    )
-
-                    clicked = False
-                    last_click_error: Exception | None = None
-                    # Prefer Submit when visible
-                    try:
-                        if submit_count > 0 and btn_submit.is_visible():
-                            logger.info("Submitting page %d", page_count)
-                            btn_submit.click()
-                            self._wait_after_action(page)
-                            self._assert_submission_complete(page)
-                            clicked = True
-                            is_last_page = True
-                    except Exception as e:
-                        last_click_error = e
-                        logger.warning("Submit click failed: %s", e)
-
-                    if not clicked:
-                        try:
-                            if next_count > 0 and btn_next.is_visible():
-                                logger.info(
-                                    "Going to next page from page %d", page_count
-                                )
-                                # Capture a simple marker to verify the page changed
-                                try:
-                                    first_heading = page.locator(
-                                        "div[role='listitem'] [role='heading']"
-                                    ).first
-                                    try:
-                                        before_heading = (
-                                            first_heading.inner_text()
-                                            or first_heading.text_content()
-                                            or ""
-                                        )
-                                    except Exception:
-                                        before_heading = (
-                                            first_heading.text_content() or ""
-                                        )
-                                except Exception:
-                                    before_heading = ""
-
-                                btn_next.click()
-                                # Wait for the page to settle after navigation
-                                try:
-                                    page.wait_for_load_state(
-                                        "networkidle", timeout=self.timeout_ms
-                                    )
-                                except Exception:
-                                    page.wait_for_timeout(1500)
-                                page.wait_for_timeout(500)
-
-                                # Verify that the page advanced.
-                                try:
-                                    after_heading_loc = page.locator(
-                                        "div[role='listitem'] [role='heading']"
-                                    ).first
-                                    try:
-                                        after_heading = (
-                                            after_heading_loc.inner_text()
-                                            or after_heading_loc.text_content()
-                                            or ""
-                                        )
-                                    except Exception:
-                                        after_heading = (
-                                            after_heading_loc.text_content() or ""
-                                        )
-                                except Exception:
-                                    after_heading = ""
-
-                                if (
-                                    before_heading
-                                    and after_heading
-                                    and before_heading.strip() == after_heading.strip()
-                                ):
-                                    # Next likely hit a required unanswered question.
-                                    logger.warning(
-                                        "Next click did not advance the page "
-                                        "(heading unchanged). Detecting required "
-                                        "unanswered questions..."
-                                    )
-                                    try:
-                                        required_markers = page.locator(
-                                            "text=Wymagane"
-                                        )
-                                        required_count = required_markers.count()
-                                        reqs: list[str] = []
-                                        for ri in range(required_count):
-                                            try:
-                                                # Climb to the nearest question block.
-                                                parent = required_markers.nth(
-                                                    ri
-                                                ).locator(
-                                                    "xpath=ancestor::div"
-                                                    "[@role='listitem']"
-                                                )
-                                                heading_loc = parent.locator(
-                                                    "[role='heading']"
-                                                ).first
-                                                heading = (
-                                                    heading_loc.text_content() or ""
-                                                )
-                                            except Exception:
-                                                heading = (
-                                                    required_markers.nth(
-                                                        ri
-                                                    ).text_content()
-                                                    or ""
-                                                )
-                                            short = _normalize_whitespace(heading)[:200]
-                                            reqs.append(short)
-                                        logger.error(
-                                            "Required unanswered blocks (sample): %s",
-                                            reqs[:10],
-                                        )
-
-                                        # Try to auto-fill required questions.
-                                        for ri in range(required_count):
-                                            try:
-                                                parent = required_markers.nth(
-                                                    ri
-                                                ).locator(
-                                                    "xpath=ancestor::div"
-                                                    "[@role='listitem']"
-                                                )
-                                                heading_loc = parent.locator(
-                                                    "[role='heading']"
-                                                ).first
-                                                heading_text = (
-                                                    heading_loc.inner_text()
-                                                    or heading_loc.text_content()
-                                                    or ""
-                                                )
-                                                clean_heading = _clean_heading_text(
-                                                    heading_text
-                                                )
-                                                logger.debug(
-                                                    "Attempting to fill required "
-                                                    "question: %s",
-                                                    clean_heading,
-                                                )
-                                                mapping = self._find_mapping(
-                                                    clean_heading, mappings
-                                                )
-                                                if mapping:
-                                                    raw_answer = response.answers.get(
-                                                        mapping.dataset_column_name
-                                                    )
-                                                    if _has_answer(raw_answer):
-                                                        self._fill_item(
-                                                            page,
-                                                            parent,
-                                                            raw_answer,
-                                                            mapping,
-                                                        )
-                                                    else:
-                                                        logger.debug(
-                                                            "No available answer for "
-                                                            "required mapping %s",
-                                                            mapping.dataset_column_name,
-                                                        )
-                                                else:
-                                                    logger.debug(
-                                                        "No mapping for required "
-                                                        "question: %s",
-                                                        clean_heading,
-                                                    )
-                                            except Exception as e:
-                                                logger.debug(
-                                                    "Failed to attempt auto-fill for "
-                                                    "required block: %s",
-                                                    e,
-                                                )
-
-                                        # Try clicking Next once more.
-                                        try:
-                                            logger.info(
-                                                "Retrying Next click after attempting "
-                                                "to fill required fields"
-                                            )
-                                            btn_next.click()
-                                            try:
-                                                page.wait_for_load_state(
-                                                    "networkidle",
-                                                    timeout=self.timeout_ms,
-                                                )
-                                            except Exception:
-                                                page.wait_for_timeout(1500)
-                                            page.wait_for_timeout(500)
-                                            try:
-                                                retry_heading_loc = page.locator(
-                                                    "div[role='listitem'] "
-                                                    "[role='heading']"
-                                                ).first
-                                                retry_heading = (
-                                                    retry_heading_loc.inner_text()
-                                                    or retry_heading_loc.text_content()
-                                                    or ""
-                                                )
-                                            except Exception:
-                                                retry_heading = ""
-                                            if (
-                                                before_heading
-                                                and retry_heading
-                                                and before_heading.strip()
-                                                == retry_heading.strip()
-                                            ):
-                                                raise RuntimeError(
-                                                    "Next did not advance after retry; "
-                                                    "required questions remain "
-                                                    "unanswered."
-                                                )
-                                        except Exception as e:
-                                            logger.warning(
-                                                "Retry Next click failed: %s", e
-                                            )
-                                            raise
-
-                                    except Exception as e:
-                                        logger.exception(
-                                            "Failed to extract required-question "
-                                            "diagnostics: %s",
-                                            e,
-                                        )
-                                        raise
-                                page_count += 1
-                                clicked = True
-                        except Exception as e:
-                            last_click_error = e
-                            logger.warning("Next click failed: %s", e)
-
-                    if not clicked:
-                        # Diagnostic information to help debugging stuck flows
-                        html = page.content()
-                        failure_detail = (
-                            f": {last_click_error}" if last_click_error else ""
-                        )
-                        logger.error(
-                            "Could not find or click Next/Submit on page %d. "
-                            "Page snapshot length=%d%s",
-                            page_count,
-                            len(html),
-                            failure_detail,
-                        )
-                        raise RuntimeError(
-                            "Could not find or complete Next/Submit button action"
-                            f"{failure_detail}."
-                        ) from last_click_error
-
-                return FillResult(
-                    success=True,
-                    message="Form submitted successfully.",
-                    final_url=page.url,
-                )
-
-            except Exception as e:
-                logger.error("Failed to fill form: %s", e)
-                screenshot_path = f"logs/failure_{response.response_id}.png"
+                last_click_error: Exception | None = None
                 try:
-                    Path("logs").mkdir(exist_ok=True)
-                    page.screenshot(path=screenshot_path)
-                except Exception as ex:
-                    logger.error("Failed to capture screenshot: %s", ex)
-                return FillResult(
-                    success=False,
-                    message=str(e),
-                    screenshot_path=screenshot_path,
-                    final_url=page.url,
+                    if submit_button.count() > 0 and submit_button.is_visible():
+                        logger.info("Submitting page %d", page_count)
+                        submit_button.click()
+                        self._wait_after_action(page)
+                        self._assert_submission_complete(page)
+                        return FillResult(
+                            success=True,
+                            message="Form submitted successfully.",
+                            final_url=page.url,
+                        )
+                except Exception as e:
+                    last_click_error = e
+                    logger.warning("Submit click failed: %s", e)
+
+                try:
+                    if next_button.count() > 0 and next_button.is_visible():
+                        logger.info("Going to next page from page %d", page_count)
+                        before_heading = self._first_question_heading(page)
+                        next_button.click()
+                        self._wait_after_action(page)
+                        after_heading = self._first_question_heading(page)
+
+                        if (
+                            before_heading
+                            and after_heading
+                            and before_heading == after_heading
+                        ):
+                            logger.warning(
+                                "Next click did not advance the page. Looking for "
+                                "required unanswered questions..."
+                            )
+                            self._fill_required_questions(page, response, mappings)
+                            logger.info("Retrying Next click after required fields")
+                            next_button.click()
+                            self._wait_after_action(page)
+                            retry_heading = self._first_question_heading(page)
+                            if before_heading and retry_heading == before_heading:
+                                raise RuntimeError(
+                                    "Next did not advance after retry; required "
+                                    "questions remain unanswered."
+                                )
+
+                        page_count += 1
+                        continue
+                except Exception as e:
+                    last_click_error = e
+                    logger.warning("Next click failed: %s", e)
+
+                html = page.content()
+                failure_detail = f": {last_click_error}" if last_click_error else ""
+                logger.error(
+                    "Could not find or click Next/Submit on page %d. "
+                    "Page snapshot length=%d%s",
+                    page_count,
+                    len(html),
+                    failure_detail,
                 )
+                raise RuntimeError(
+                    "Could not find or complete Next/Submit button action"
+                    f"{failure_detail}."
+                ) from last_click_error
+
+        except Exception as e:
+            logger.error("Failed to fill form: %s", e)
+            screenshot_path = f"logs/failure_{response.response_id}.png"
+            try:
+                Path("logs").mkdir(exist_ok=True)
+                page.screenshot(path=screenshot_path)
+            except Exception as ex:
+                logger.error("Failed to capture screenshot: %s", ex)
+            return FillResult(
+                success=False,
+                message=str(e),
+                screenshot_path=screenshot_path,
+                final_url=page.url,
+            )
+        finally:
+            try:
+                page.close()
             finally:
-                context.close()
-                browser.close()
+                if started_here:
+                    self.close()
+
+    def _wait_for_form_ready(self, page: Page) -> None:
+        try:
+            page.locator("div[role='listitem'], div[role='button']").first.wait_for(
+                state="visible",
+                timeout=self.timeout_ms,
+            )
+        except Exception:
+            logger.debug("Form controls were not visible yet; waiting for network idle")
+            try:
+                page.wait_for_load_state(
+                    "networkidle", timeout=min(self.timeout_ms, 3000)
+                )
+            except Exception:
+                if self.action_delay_ms > 0:
+                    page.wait_for_timeout(self.action_delay_ms)
+
+    def _first_question_heading(self, page: Page) -> str:
+        try:
+            heading = page.locator("div[role='listitem'] [role='heading']").first
+            if heading.count() == 0:
+                return ""
+            try:
+                text = heading.inner_text(timeout=1000)
+            except Exception:
+                text = heading.text_content(timeout=1000) or ""
+            return _clean_heading_text(text)
+        except Exception:
+            return ""
+
+    def _fill_required_questions(
+        self, page: Page, response: GeneratedResponse, mappings: list[MappingEntry]
+    ) -> None:
+        required_markers = page.locator("text=Wymagane")
+        required_count = required_markers.count()
+        summaries = self._required_error_summaries(page)
+        if summaries:
+            logger.error("Required unanswered blocks (sample): %s", summaries[:10])
+
+        for index in range(required_count):
+            try:
+                parent = required_markers.nth(index).locator(
+                    "xpath=ancestor::div[@role='listitem']"
+                )
+                heading_loc = parent.locator("[role='heading']").first
+                heading_text = (
+                    heading_loc.inner_text() or heading_loc.text_content() or ""
+                )
+                clean_heading = _clean_heading_text(heading_text)
+                mapping = self._find_mapping(clean_heading, mappings)
+                if mapping is None:
+                    logger.debug("No mapping for required question: %s", clean_heading)
+                    continue
+
+                raw_answer = response.answers.get(mapping.dataset_column_name)
+                if _has_answer(raw_answer):
+                    self._fill_item(page, parent, raw_answer, mapping)
+                else:
+                    logger.debug(
+                        "No available answer for required mapping %s",
+                        mapping.dataset_column_name,
+                    )
+            except Exception as e:
+                logger.debug(
+                    "Failed to attempt auto-fill for required block %d: %s",
+                    index,
+                    e,
+                )
 
     def _fill_current_page(
         self, page: Page, response: GeneratedResponse, mappings: list[MappingEntry]
@@ -529,9 +448,14 @@ class GoogleFormFiller:
 
     def _wait_after_action(self, page: Page) -> None:
         try:
-            page.wait_for_load_state("networkidle", timeout=3000)
+            page.wait_for_load_state("networkidle", timeout=1500)
         except Exception:
-            page.wait_for_timeout(500)
+            if self.action_delay_ms > 0:
+                page.wait_for_timeout(self.action_delay_ms)
+
+    def _pause_after_field_action(self, page: Page) -> None:
+        if self.action_delay_ms > 0:
+            page.wait_for_timeout(self.action_delay_ms)
 
     def _is_submission_confirmation(self, page: Page) -> bool:
         if "/formResponse" in page.url:
@@ -706,7 +630,7 @@ class GoogleFormFiller:
                         options.filter(
                             has_text=re.compile(re.escape(tgt), re.IGNORECASE)
                         ).first.click(timeout=1500)
-                    page.wait_for_timeout(200)
+                    self._pause_after_field_action(page)
                     return FieldFillResult(success=True, answers=[tgt])
                 except Exception as e:
                     return FieldFillResult(
@@ -806,7 +730,7 @@ class GoogleFormFiller:
             try:
                 option.scroll_into_view_if_needed(timeout=1000)
                 option.click(timeout=2000, force=True)
-                page.wait_for_timeout(150)
+                self._pause_after_field_action(page)
                 if option.get_attribute("aria-checked") == expected_checked:
                     logger.debug("%s option selected: '%s'", role_name, label)
                     return True
@@ -817,7 +741,7 @@ class GoogleFormFiller:
                         box["x"] + box["width"] / 2,
                         box["y"] + box["height"] / 2,
                     )
-                    page.wait_for_timeout(150)
+                    self._pause_after_field_action(page)
                     if option.get_attribute("aria-checked") == expected_checked:
                         logger.debug(
                             "%s option selected by mouse fallback: '%s'",
@@ -844,7 +768,7 @@ class GoogleFormFiller:
                 .first
             )
             label_locator.click(timeout=1000, force=True)
-            page.wait_for_timeout(150)
+            self._pause_after_field_action(page)
         except Exception as e:
             logger.debug(
                 "No %s label fallback matched for '%s': %s", role_name, target, e

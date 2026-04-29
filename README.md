@@ -174,6 +174,7 @@ python src/main.py \
     --csv data/input_surveys.csv \
     --form "https://docs.google.com/forms/..." \
     --count 25 \
+    --headless \
     --config config/settings.yaml
 ```
 
@@ -183,6 +184,10 @@ python src/main.py \
 -   `--form` : Google Form URL
 -   `--count` : number of submissions
 -   `--config` : YAML config path
+-   `--headless` : run Playwright without a visible browser window
+-   `--headed` : force a visible browser window for debugging
+-   `--timeout-ms` : Playwright page/action timeout in milliseconds
+-   `--action-delay-ms` : small delay after field actions; lower is faster
 
 ------------------------------------------------------------------------
 

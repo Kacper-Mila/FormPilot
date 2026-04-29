@@ -2,6 +2,11 @@ app:
     name: FormPilot
     log_level: INFO
     strict_mode: false
+automation:
+    headless: false
+    timeout_ms: 15000
+    action_delay_ms: 50
+    stop_on_error: false
 cleaning:
     drop_timestamp_columns: true
     timestamp_patterns:

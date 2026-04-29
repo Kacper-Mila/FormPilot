@@ -79,33 +79,36 @@ class SubmissionRunner:
     ) -> list[SubmissionRun]:
         """Generate, fill and map count times."""
         results: list[SubmissionRun] = []
-        for i in range(count):
-            logger.info("Starting run %d of %d", i + 1, count)
+        with self.form_filler:
+            for i in range(count):
+                logger.info("Starting run %d of %d", i + 1, count)
 
-            try:
-                response = self.response_generator.generate_response()
-                logger.info("Generated response ID: %s", response.response_id)
+                try:
+                    response = self.response_generator.generate_response()
+                    logger.info("Generated response ID: %s", response.response_id)
 
-                # Save generated row locally for traceability
-                self._save_response(response)
+                    # Save generated row locally for traceability
+                    self._save_response(response)
 
-                result = self.form_filler.fill_and_submit(form_url, response, mappings)
-                results.append(SubmissionRun(response=response, fill_result=result))
-
-                if not result.success:
-                    logger.error("Run %d failed: %s", i + 1, result.message)
-                    if self.stop_on_error:
-                        logger.warning("Stopping early due to stop_on_error=True")
-                        break
-                else:
-                    logger.info("Run %d succeeded.", i + 1)
-
-            except Exception as e:
-                logger.exception("Unexpected error during run %d: %s", i + 1, e)
-                if self.stop_on_error:
-                    logger.warning(
-                        "Stopping early due to fatal error and stop_on_error=True"
+                    result = self.form_filler.fill_and_submit(
+                        form_url, response, mappings
                     )
-                    break
+                    results.append(SubmissionRun(response=response, fill_result=result))
+
+                    if not result.success:
+                        logger.error("Run %d failed: %s", i + 1, result.message)
+                        if self.stop_on_error:
+                            logger.warning("Stopping early due to stop_on_error=True")
+                            break
+                    else:
+                        logger.info("Run %d succeeded.", i + 1)
+
+                except Exception as e:
+                    logger.exception("Unexpected error during run %d: %s", i + 1, e)
+                    if self.stop_on_error:
+                        logger.warning(
+                            "Stopping early due to fatal error and stop_on_error=True"
+                        )
+                        break
 
         return results
