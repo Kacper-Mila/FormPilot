@@ -78,10 +78,7 @@ class SubmissionRunner:
 
         try:
             with self.output_csv_path.open("a", encoding="utf-8", newline="") as f:
-                # Determine fieldnames from the generated response answers
-                fieldnames = ["response_id", "persona_id", "generated_at"] + list(
-                    response.answers.keys()
-                )
+                fieldnames = self._response_fieldnames(response)
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
 
                 if file_is_empty:
@@ -100,11 +97,22 @@ class SubmissionRunner:
                         for key, value in response.answers.items()
                     }
                 )
-                writer.writerow(row_data)
+                writer.writerow(
+                    {fieldname: row_data.get(fieldname, "") for fieldname in fieldnames}
+                )
         except Exception as e:
             logger.error(
                 "Failed to save response %s to CSV: %s", response.response_id, e
             )
+
+    def _response_fieldnames(self, response: GeneratedResponse) -> list[str]:
+        """Return stable CSV columns for all generated responses in a run."""
+
+        answer_columns = list(self.response_generator.model.marginals.keys())
+        if not answer_columns:
+            answer_columns = list(response.answers.keys())
+
+        return ["response_id", "persona_id", "generated_at"] + answer_columns
 
     def _ensure_required_mapped_answers(
         self, response: GeneratedResponse, mappings: list[MappingEntry]
