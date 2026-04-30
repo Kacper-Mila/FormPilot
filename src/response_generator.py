@@ -167,6 +167,43 @@ class ResponseGenerator:
     def _question_for_column(self, column_name: str) -> SurveyQuestion | None:
         return self._questions_by_column.get(column_name)
 
+    @staticmethod
+    def _conditional_parent_column(question: SurveyQuestion) -> str | None:
+        conditional = question.dependency_metadata.get("conditional_on")
+        if not isinstance(conditional, dict):
+            return None
+
+        parent_column = str(conditional.get("column_name", "")).strip()
+        return parent_column or None
+
+    @staticmethod
+    def _conditional_skip_reason(
+        question: SurveyQuestion, answers: dict[str, Any]
+    ) -> str | None:
+        """Return why a conditional follow-up should not be answered yet."""
+
+        conditional = question.dependency_metadata.get("conditional_on")
+        if not isinstance(conditional, dict):
+            return None
+
+        parent_column = str(conditional.get("column_name", "")).strip()
+        expected_values = [
+            _normalize_for_condition(value)
+            for value in conditional.get("expected_values", [])
+        ]
+        parent_answer = answers.get(parent_column)
+        if parent_column and parent_answer is None:
+            return f"waiting for conditional parent '{parent_column}'"
+        if expected_values:
+            normalized_parent = _normalize_for_condition(parent_answer)
+            if not any(
+                expected and expected in normalized_parent
+                for expected in expected_values
+            ):
+                return f"conditional parent '{parent_column}' not applicable"
+
+        return None
+
     def _should_skip_optional_question(
         self, column_name: str, answers: dict[str, Any]
     ) -> tuple[bool, str | None]:
@@ -174,23 +211,12 @@ class ResponseGenerator:
         if question is None:
             return False, None
 
-        conditional = question.dependency_metadata.get("conditional_on")
-        if isinstance(conditional, dict):
-            parent_column = str(conditional.get("column_name", "")).strip()
-            expected_values = [
-                _normalize_for_condition(value)
-                for value in conditional.get("expected_values", [])
-            ]
-            parent_answer = answers.get(parent_column)
-            if parent_column and parent_answer is None:
-                return True, f"waiting for conditional parent '{parent_column}'"
-            if expected_values:
-                normalized_parent = _normalize_for_condition(parent_answer)
-                if not any(
-                    expected and expected in normalized_parent
-                    for expected in expected_values
-                ):
-                    return True, f"conditional parent '{parent_column}' not applicable"
+        conditional_skip_reason = self._conditional_skip_reason(question, answers)
+        if conditional_skip_reason:
+            return True, conditional_skip_reason
+
+        if isinstance(question.dependency_metadata.get("conditional_on"), dict):
+            return False, None
 
         if question.optional:
             missing_ratio = float(
@@ -208,14 +234,40 @@ class ResponseGenerator:
         return sampled
 
     def _dependency_parent_priority(self, target_column: str) -> list[str]:
+        priority: list[str] = []
+        question = self._question_for_column(target_column)
+        if question is not None:
+            conditional_parent = self._conditional_parent_column(question)
+            if conditional_parent:
+                priority.append(conditional_parent)
+
         rules = self.model.dependency_rules.get(target_column, [])
         if rules:
-            return [
+            priority.extend(
                 str(rule.get("parent_column"))
                 for rule in rules
                 if str(rule.get("parent_column", "")).strip()
-            ]
-        return list(self.model.dependencies.get(target_column, {}).keys())
+            )
+        else:
+            priority.extend(self.model.dependencies.get(target_column, {}).keys())
+
+        unique_priority: list[str] = []
+        seen: set[str] = set()
+        for parent_column in priority:
+            if parent_column in seen:
+                continue
+            seen.add(parent_column)
+            unique_priority.append(parent_column)
+        return unique_priority
+
+    def _waiting_for_conditional_parent(
+        self, column_name: str, answers: dict[str, Any]
+    ) -> bool:
+        question = self._question_for_column(column_name)
+        if question is None:
+            return False
+        reason = self._conditional_skip_reason(question, answers)
+        return bool(reason and reason.startswith("waiting for conditional parent"))
 
     def _sample_for_column(
         self,
@@ -225,6 +277,12 @@ class ResponseGenerator:
         *,
         force_answer: bool = False,
     ) -> Any:
+        question = self._question_for_column(column_name)
+        if question is not None:
+            conditional_skip_reason = self._conditional_skip_reason(question, answers)
+            if conditional_skip_reason:
+                return None
+
         if not force_answer:
             skip, _reason = self._should_skip_optional_question(column_name, answers)
             if skip:
@@ -278,6 +336,11 @@ class ResponseGenerator:
     def _ordered_columns(self) -> tuple[list[str], list[str]]:
         all_columns = list(self.model.marginals.keys())
         dependent_targets = set(self.model.dependencies.keys())
+        dependent_targets.update(
+            question.column_name
+            for question in self._questions_by_column.values()
+            if self._conditional_parent_column(question)
+        )
         anchor_columns = [
             column for column in all_columns if column not in dependent_targets
         ]
@@ -314,18 +377,20 @@ class ResponseGenerator:
             if sampled is not None:
                 answers[column_name] = sampled
 
-        pending = set(dependent_columns)
+        pending = list(dependent_columns)
         max_passes = max(1, len(pending) + 1)
         for _ in range(max_passes):
             if not pending:
                 break
 
-            generated_this_pass: list[str] = []
-            for column_name in list(pending):
+            generated_this_pass = False
+            still_pending: list[str] = []
+            for column_name in pending:
                 parent_priority = self._dependency_parent_priority(column_name)
                 if parent_priority and not any(
                     parent in answers for parent in parent_priority
                 ):
+                    still_pending.append(column_name)
                     continue
 
                 sampled = self._sample_for_column(
@@ -335,11 +400,13 @@ class ResponseGenerator:
                 )
                 if sampled is not None:
                     answers[column_name] = sampled
-                generated_this_pass.append(column_name)
+                    generated_this_pass = True
+                elif self._waiting_for_conditional_parent(column_name, answers):
+                    still_pending.append(column_name)
+                else:
+                    generated_this_pass = True
 
-            for column_name in generated_this_pass:
-                pending.discard(column_name)
-
+            pending = still_pending
             if not generated_this_pass:
                 break
 
