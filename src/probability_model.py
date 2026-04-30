@@ -43,7 +43,7 @@ class ProbabilityModel:
 def _clean_series(dataframe: pd.DataFrame, column_name: str) -> pd.Series:
     """Return normalized non-empty text values for one column."""
 
-    series = dataframe[column_name].dropna().astype(str).map(str.strip)
+    series = dataframe[column_name].dropna().astype(str).map(str.strip).map(str.lower)
     return series[series != ""]
 
 
