@@ -99,3 +99,23 @@ def test_probability_model_builds_marginals_and_dependencies():
 
     assert model.marginals["education"]["higher"] == 0.5
     assert "followup" in model.dependencies
+
+
+def test_probability_model_lowercases_answers_before_calculation():
+    dataframe = pd.DataFrame(
+        {
+            "reason": ["Strach", "strach", "BRAK CZASU", "brak czasu"],
+            "followup": ["TAK", "tak", "Nie", "nie"],
+        }
+    )
+
+    model = build_probability_model(dataframe, min_support_rows=2)
+
+    assert model.marginals["reason"] == {
+        "strach": 0.5,
+        "brak czasu": 0.5,
+    }
+    assert model.marginals["followup"] == {
+        "tak": 0.5,
+        "nie": 0.5,
+    }
