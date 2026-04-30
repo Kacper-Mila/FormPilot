@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import re
 import warnings
+from collections.abc import Sequence
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Sequence
 
 import pandas as pd
-
 
 _DEFAULT_TIMESTAMP_PATTERNS: tuple[str, ...] = (
     "timestamp",
     "time_stamp",
+    "sygnatura_czasowa",
+    "sygnatura czasowa",
     "data",
     "godzina",
     "datetime",
@@ -22,13 +24,23 @@ _DEFAULT_TIMESTAMP_PATTERNS: tuple[str, ...] = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class ColumnMetadata:
+    """Relationship between the stable cleaned id and source CSV header."""
+
+    column_id: str
+    original_text: str
+
+
 def _contains_datetime_token(value: str) -> bool:
     """Check whether one value has common datetime markers."""
 
+    stripped = value.strip()
     return bool(
-        re.search(r"\d{1,4}[./:-]\d{1,2}[./:-]\d{1,4}", value)
-        or re.search(r"\d{1,2}:\d{2}", value)
-        or "t" in value.lower()
+        re.search(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", stripped)
+        or re.search(r"\b\d{4}[./-]\d{1,2}[./-]\d{1,2}\b", stripped)
+        or re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", stripped)
+        or re.search(r"\b\d{4}-\d{2}-\d{2}t\d{2}:\d{2}", stripped.casefold())
     )
 
 
@@ -57,6 +69,16 @@ def make_unique_columns(columns: list[str]) -> list[str]:
     return unique_columns
 
 
+def build_column_metadata(original_columns: Sequence[str]) -> list[ColumnMetadata]:
+    """Build stable column ids while retaining the original question wording."""
+
+    column_ids = make_unique_columns([str(column) for column in original_columns])
+    return [
+        ColumnMetadata(column_id=column_id, original_text=str(original_text))
+        for column_id, original_text in zip(column_ids, original_columns, strict=True)
+    ]
+
+
 def _looks_like_timestamp_series(series: pd.Series) -> bool:
     """Detect columns that mostly contain parseable timestamps."""
 
@@ -74,14 +96,19 @@ def _looks_like_timestamp_series(series: pd.Series) -> bool:
     if float(has_datetime_tokens) < 0.4:
         return False
 
+    parse_ratios: list[float] = []
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        parsed = pd.to_datetime(text_values, errors="coerce", dayfirst=True, utc=False)
-    parse_ratio = float(parsed.notna().mean())
+        for dayfirst in (True, False):
+            parsed = pd.to_datetime(
+                text_values, errors="coerce", dayfirst=dayfirst, utc=False
+            )
+            parse_ratios.append(float(parsed.notna().mean()))
+    parse_ratio = max(parse_ratios, default=0.0)
     return parse_ratio >= 0.8
 
 
-def _find_timestamp_columns(
+def find_timestamp_columns(
     dataframe: pd.DataFrame, timestamp_patterns: Sequence[str] | None = None
 ) -> list[str]:
     """Return columns likely representing timestamps."""
@@ -103,6 +130,12 @@ def _find_timestamp_columns(
     return timestamp_columns
 
 
+def _column_metadata_attr(metadata: list[ColumnMetadata]) -> dict[str, dict[str, str]]:
+    """Return JSON-friendly metadata stored on cleaned dataframe attrs."""
+
+    return {item.column_id: asdict(item) for item in metadata}
+
+
 def clean_dataframe(
     dataframe: pd.DataFrame,
     drop_timestamp_columns: bool = False,
@@ -113,13 +146,18 @@ def clean_dataframe(
     cleaned = dataframe.copy()
 
     if drop_timestamp_columns:
-        timestamp_columns = _find_timestamp_columns(
+        timestamp_columns = find_timestamp_columns(
             cleaned, timestamp_patterns=timestamp_patterns
         )
         if timestamp_columns:
             cleaned = cleaned.drop(columns=timestamp_columns)
 
-    cleaned.columns = make_unique_columns([str(column) for column in cleaned.columns])
+    metadata = build_column_metadata([str(column) for column in cleaned.columns])
+    cleaned.columns = [item.column_id for item in metadata]
+    cleaned.attrs["column_metadata"] = _column_metadata_attr(metadata)
+    cleaned.attrs["original_columns"] = {
+        item.column_id: item.original_text for item in metadata
+    }
 
     for column in cleaned.columns:
         if (

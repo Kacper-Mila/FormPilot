@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import logging
+from pathlib import Path
 
 DEFAULT_LOG_DIR = Path("logs")
 DEFAULT_LOG_FILE = "formpilot.log"

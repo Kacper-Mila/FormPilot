@@ -138,6 +138,7 @@ celerybeat.pid
 .env
 .envrc
 .venv
+.formVenv/
 env/
 venv/
 ENV/
@@ -208,3 +209,4 @@ __marimo__/
 
 resources/
 data/
+logs/

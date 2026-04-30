@@ -2,21 +2,55 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
-from uuid import uuid4
 import csv
 import json
 import random
+import re
+import unicodedata
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-from probability_model import ProbabilityModel
-from persona_generator import Persona, PersonaGenerator
+from .persona_generator import Persona, PersonaGenerator
+from .probability_model import ProbabilityModel
+from .schema_detector import FieldType, SurveyQuestion, SurveySchema
+
+_POLISH_ASCII_MAP = str.maketrans(
+    {
+        "ą": "a",
+        "ć": "c",
+        "ę": "e",
+        "ł": "l",
+        "ń": "n",
+        "ó": "o",
+        "ś": "s",
+        "ź": "z",
+        "ż": "z",
+    }
+)
 
 
 def _default_metadata() -> dict[str, Any]:
     return {}
+
+
+def _split_multi_select_value(value: str) -> list[str]:
+    """Split encoded multi-select responses into list values."""
+
+    return [part.strip() for part in re.split(r"\s*[,;|]\s*", value) if part.strip()]
+
+
+def _normalize_for_condition(value: object) -> str:
+    """Normalize generated and expected values for simple dependency checks."""
+
+    text = unicodedata.normalize(
+        "NFKD", str(value).casefold().translate(_POLISH_ASCII_MAP)
+    )
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    text = re.sub(r"[^0-9a-z]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 @dataclass(slots=True)
@@ -45,6 +79,7 @@ class ResponseGenerator:
         conditional_strength: float = 0.8,
         temperature: float = 0.95,
         duplicate_retry_limit: int = 10,
+        schema: SurveySchema | None = None,
     ) -> None:
         self.model = model or ProbabilityModel()
         self.random = random.Random(random_seed)
@@ -56,6 +91,12 @@ class ResponseGenerator:
         self.temperature = max(0.05, float(temperature))
         self.duplicate_retry_limit = max(1, int(duplicate_retry_limit))
         self._seen_signatures: set[tuple[tuple[str, str], ...]] = set()
+        self.schema = schema
+        self._questions_by_column: dict[str, SurveyQuestion] = (
+            {question.column_name: question for question in schema.questions}
+            if schema
+            else {}
+        )
 
     def _sample_distribution(
         self,
@@ -111,9 +152,60 @@ class ResponseGenerator:
 
     @staticmethod
     def _signature_for_answers(answers: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+        def normalize_value(value: Any) -> str:
+            if isinstance(value, list):
+                return "|".join(str(item) for item in sorted(value, key=str))
+            return str(value)
+
         return tuple(
-            sorted((str(column), str(value)) for column, value in answers.items())
+            sorted(
+                (str(column), normalize_value(value))
+                for column, value in answers.items()
+            )
         )
+
+    def _question_for_column(self, column_name: str) -> SurveyQuestion | None:
+        return self._questions_by_column.get(column_name)
+
+    def _should_skip_optional_question(
+        self, column_name: str, answers: dict[str, Any]
+    ) -> tuple[bool, str | None]:
+        question = self._question_for_column(column_name)
+        if question is None:
+            return False, None
+
+        conditional = question.dependency_metadata.get("conditional_on")
+        if isinstance(conditional, dict):
+            parent_column = str(conditional.get("column_name", "")).strip()
+            expected_values = [
+                _normalize_for_condition(value)
+                for value in conditional.get("expected_values", [])
+            ]
+            parent_answer = answers.get(parent_column)
+            if parent_column and parent_answer is None:
+                return True, f"waiting for conditional parent '{parent_column}'"
+            if expected_values:
+                normalized_parent = _normalize_for_condition(parent_answer)
+                if not any(
+                    expected and expected in normalized_parent
+                    for expected in expected_values
+                ):
+                    return True, f"conditional parent '{parent_column}' not applicable"
+
+        if question.optional:
+            missing_ratio = float(
+                question.dependency_metadata.get("missing_ratio", 0.0)
+            )
+            if missing_ratio > 0 and self.random.random() < min(missing_ratio, 0.95):
+                return True, "sampled optional skip"
+
+        return False, None
+
+    def _coerce_sampled_answer(self, column_name: str, sampled: str) -> Any:
+        question = self._question_for_column(column_name)
+        if question and question.field_type == FieldType.MULTI_SELECT:
+            return _split_multi_select_value(sampled)
+        return sampled
 
     def _dependency_parent_priority(self, target_column: str) -> list[str]:
         rules = self.model.dependency_rules.get(target_column, [])
@@ -126,14 +218,25 @@ class ResponseGenerator:
         return list(self.model.dependencies.get(target_column, {}).keys())
 
     def _sample_for_column(
-        self, column_name: str, persona: Persona, answers: dict[str, Any]
-    ) -> str:
+        self,
+        column_name: str,
+        persona: Persona,
+        answers: dict[str, Any],
+        *,
+        force_answer: bool = False,
+    ) -> Any:
+        if not force_answer:
+            skip, _reason = self._should_skip_optional_question(column_name, answers)
+            if skip:
+                return None
+
         marginal = self.model.marginals.get(column_name, {})
         if not marginal:
             return ""
 
         if self.random.random() < self.exploration_rate:
-            return self._sample_distribution(marginal, persona)
+            sampled = self._sample_distribution(marginal, persona)
+            return self._coerce_sampled_answer(column_name, sampled)
 
         dependencies_for_target = self.model.dependencies.get(column_name, {})
         for parent_column in self._dependency_parent_priority(column_name):
@@ -151,9 +254,26 @@ class ResponseGenerator:
                 conditional=conditional,
                 conditional_strength=self.conditional_strength,
             )
-            return self._sample_distribution(mixed, persona)
+            sampled = self._sample_distribution(mixed, persona)
+            return self._coerce_sampled_answer(column_name, sampled)
 
-        return self._sample_distribution(marginal, persona)
+        sampled = self._sample_distribution(marginal, persona)
+        return self._coerce_sampled_answer(column_name, sampled)
+
+    def generate_required_answer(
+        self, column_name: str, answers: dict[str, Any], persona_id: str | None = None
+    ) -> Any:
+        """Generate a fallback for a field the target form marks as required."""
+
+        persona = self.persona_generator.persona_by_id(persona_id)
+        if persona is None:
+            persona = self.persona_generator.choose_persona()
+        return self._sample_for_column(
+            column_name=column_name,
+            persona=persona,
+            answers=answers,
+            force_answer=True,
+        )
 
     def _ordered_columns(self) -> tuple[list[str], list[str]]:
         all_columns = list(self.model.marginals.keys())
@@ -186,11 +306,13 @@ class ResponseGenerator:
         anchor_columns, dependent_columns = self._ordered_columns()
 
         for column_name in anchor_columns:
-            answers[column_name] = self._sample_for_column(
+            sampled = self._sample_for_column(
                 column_name=column_name,
                 persona=persona,
                 answers=answers,
             )
+            if sampled is not None:
+                answers[column_name] = sampled
 
         pending = set(dependent_columns)
         max_passes = max(1, len(pending) + 1)
@@ -206,11 +328,13 @@ class ResponseGenerator:
                 ):
                     continue
 
-                answers[column_name] = self._sample_for_column(
+                sampled = self._sample_for_column(
                     column_name=column_name,
                     persona=persona,
                     answers=answers,
                 )
+                if sampled is not None:
+                    answers[column_name] = sampled
                 generated_this_pass.append(column_name)
 
             for column_name in generated_this_pass:
@@ -220,11 +344,13 @@ class ResponseGenerator:
                 break
 
         for column_name in pending:
-            answers[column_name] = self._sample_for_column(
+            sampled = self._sample_for_column(
                 column_name=column_name,
                 persona=persona,
                 answers=answers,
             )
+            if sampled is not None:
+                answers[column_name] = sampled
 
         return answers
 
@@ -238,7 +364,8 @@ class ResponseGenerator:
         issues: list[str] = []
         attempts = 0
 
-        for attempts in range(1, self.duplicate_retry_limit + 1):
+        for attempt in range(1, self.duplicate_retry_limit + 1):
+            attempts = attempt
             candidate = self._generate_candidate(active_persona)
             signature = self._signature_for_answers(candidate)
             if signature in self._seen_signatures:
@@ -261,7 +388,7 @@ class ResponseGenerator:
             response_id=str(uuid4()),
             persona_id=active_persona.persona_id,
             answers=answers,
-            generated_at=datetime.now(timezone.utc).isoformat(),
+            generated_at=datetime.now(UTC).isoformat(),
             metadata={
                 "persona": active_persona.name,
                 "persona_traits": active_persona.traits,
@@ -327,6 +454,11 @@ class ResponseGenerator:
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
+        def csv_value(value: Any) -> Any:
+            if isinstance(value, list):
+                return "; ".join(str(item) for item in value)
+            return value
+
         all_columns: set[str] = set()
         for response in responses:
             all_columns.update(response.answers.keys())
@@ -345,7 +477,7 @@ class ResponseGenerator:
                 }
                 row.update(
                     {
-                        column: response.answers.get(column, "")
+                        column: csv_value(response.answers.get(column, ""))
                         for column in ordered_columns
                     }
                 )

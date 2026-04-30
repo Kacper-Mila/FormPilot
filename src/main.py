@@ -11,19 +11,19 @@ from urllib.parse import urlparse
 
 import yaml
 
-from data_cleaner import clean_dataframe, save_cleaned_csv
-from data_loader import load_csv
-from form_parser import GoogleFormParser
-from logger import setup_logging
-from persona_generator import PersonaGenerator
-from probability_model import (
+from .data_cleaner import clean_dataframe, save_cleaned_csv
+from .data_loader import load_csv
+from .form_parser import GoogleFormParser
+from .logger import setup_logging
+from .persona_generator import PersonaGenerator
+from .probability_model import (
     ProbabilityModel,
     build_probability_model,
     load_probability_model,
     save_probability_model,
 )
-from response_generator import ResponseGenerator
-from schema_detector import detect_schema, export_schema
+from .response_generator import ResponseGenerator
+from .schema_detector import detect_schema, export_schema
 
 
 def load_settings(config_path: str | Path) -> dict[str, Any]:
@@ -80,6 +80,21 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Small pause after field actions; lower is faster, higher is safer",
+    )
+    parser.add_argument(
+        "--dry-run",
+        "--no-submit",
+        dest="no_submit",
+        action="store_true",
+        default=None,
+        help="Fill and validate without submitting the Google Form",
+    )
+    parser.add_argument(
+        "--submit",
+        dest="submit",
+        action="store_true",
+        default=None,
+        help="Explicitly allow Google Form submission",
     )
     parser.add_argument(
         "--list-personas",
@@ -148,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
             cli_parser.error(str(exc))
 
     automation_settings = settings.get("automation", {})
+    mapping_settings = settings.get("mapping", {})
     headless = (
         bool(automation_settings.get("headless", False))
         if args.headless is None
@@ -173,6 +189,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     if max_submission_retries < 0:
         cli_parser.error("automation.max_submission_retries must be 0 or greater")
+    submit_configured = bool(automation_settings.get("submit", False))
+    dry_run_configured = bool(automation_settings.get("dry_run", True))
+    no_submit = dry_run_configured or not submit_configured
+    if args.no_submit is True:
+        no_submit = True
+    if args.submit is True:
+        no_submit = False
+    min_question_match_confidence = float(
+        mapping_settings.get("minimum_question_match_confidence", 0.6)
+    )
+    min_option_match_confidence = float(
+        mapping_settings.get("minimum_option_match_confidence", 0.72)
+    )
+    allow_low_confidence_mappings = bool(
+        mapping_settings.get("allow_low_confidence_mappings", False)
+    )
 
     cleaned_output = settings.get("paths", {}).get(
         "cleaned_data", "data/cleaned_surveys.csv"
@@ -214,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     persona_mode = args.persona_mode or configured_mode
 
-    from schema_detector import SurveySchema
+    from .schema_detector import SurveySchema
 
     seed_value = args.seed
     if seed_value is None and persona_settings.get("seed") is not None:
@@ -250,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
         if schema_path.exists():
             with schema_path.open("r", encoding="utf-8") as f:
                 schema_dict = json.load(f)
-            from schema_detector import SurveyQuestion, FieldType
+            from .schema_detector import FieldType, SurveyQuestion
 
             questions = [
                 SurveyQuestion(
@@ -290,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:
             model=probability_model,
             random_seed=seed_value,
             persona_generator=persona_generator,
+            schema=schema,
         )
 
         if persona_mode == "uniform":
@@ -321,19 +354,33 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Parsed form schema generated at: {form_schema_path}")
 
         if schema:
-            from form_mapper import match_survey_to_form, export_mapping
+            from .form_mapper import export_mapping, match_survey_to_form
 
             mapping_output = settings.get("paths", {}).get(
                 "mapping_export", "data/form_mapping.json"
             )
-            mapping_table = match_survey_to_form(schema, parsed_form.questions)
+            mapping_table = match_survey_to_form(
+                schema,
+                parsed_form.questions,
+                min_confidence=min_question_match_confidence,
+                min_option_confidence=min_option_match_confidence,
+                allow_low_confidence=allow_low_confidence_mappings,
+            )
             export_mapping(mapping_table, mapping_output)
             print(f"Form mapping JSON generated at: {mapping_output}")
 
             if args.count > 0:
-                print(f"Starting {args.count} submission(s)...")
-                from google_form_filler import GoogleFormFiller
-                from submission_runner import SubmissionRunner
+                if not no_submit and not mapping_table.is_submission_safe():
+                    cli_parser.error(
+                        "Submission blocked by mapping review issues. Inspect "
+                        f"{mapping_output}, fix mappings or explicitly allow "
+                        "low-confidence mappings in config."
+                    )
+
+                action_name = "dry-run fill(s)" if no_submit else "submission(s)"
+                print(f"Starting {args.count} {action_name}...")
+                from .google_form_filler import GoogleFormFiller
+                from .submission_runner import SubmissionRunner
 
                 # We might not have created a generator if --generate-response
                 # was not passed, but we need it for submissions.
@@ -344,6 +391,7 @@ def main(argv: list[str] | None = None) -> int:
                         model=probability_model,
                         random_seed=seed_value,
                         persona_generator=persona_generator,
+                        schema=schema,
                     )
 
                 filler = GoogleFormFiller(
@@ -360,11 +408,18 @@ def main(argv: list[str] | None = None) -> int:
                         automation_settings.get("retry_failed_submissions", False)
                     ),
                     max_submission_retries=max_submission_retries,
+                    no_submit=no_submit,
                 )
 
-                runs = runner.run(args.form, args.count, mapping_table.mappings)
+                runs = runner.run(
+                    args.form, args.count, mapping_table.accepted_mappings()
+                )
                 successes = sum(1 for r in runs if r.fill_result.success)
-                print(f"Completed: {successes} / {args.count} submitted successfully.")
+                result_verb = "validated" if no_submit else "submitted"
+                print(
+                    f"Completed: {successes} / {args.count} "
+                    f"{result_verb} successfully."
+                )
         elif args.count > 0:
             cli_parser.error(
                 "Submissions require a survey schema. Provide --csv or configure "
