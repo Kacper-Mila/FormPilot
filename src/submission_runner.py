@@ -7,16 +7,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from form_mapper import MappingEntry
-from google_form_filler import FillResult, GoogleFormFiller
-from response_generator import GeneratedResponse, ResponseGenerator
-from logger import setup_logging
+from .form_mapper import MappingEntry
+from .google_form_filler import FillResult, GoogleFormFiller
+from .logger import setup_logging
+from .response_generator import GeneratedResponse, ResponseGenerator
 
 logger = setup_logging()
 
 
 def _default_metadata() -> dict[str, Any]:
     return {}
+
+
+def _has_answer(value: object) -> bool:
+    return not (
+        value is None or value == "" or (isinstance(value, list) and not value)
+    )
 
 
 @dataclass(slots=True)
@@ -39,6 +45,7 @@ class SubmissionRunner:
         stop_on_error: bool = False,
         retry_failed_submissions: bool = False,
         max_submission_retries: int = 0,
+        no_submit: bool = False,
     ) -> None:
         self.response_generator = response_generator
         self.form_filler = form_filler
@@ -46,6 +53,7 @@ class SubmissionRunner:
         self.stop_on_error = stop_on_error
         self.retry_failed_submissions = retry_failed_submissions
         self.max_submission_retries = max(0, int(max_submission_retries))
+        self.no_submit = no_submit
 
     def _clear_output_csv(self) -> None:
         """Clear generated responses from previous submission batches."""
@@ -84,11 +92,51 @@ class SubmissionRunner:
                     "persona_id": response.persona_id or "",
                     "generated_at": response.generated_at,
                 }
-                row_data.update(response.answers)
+                row_data.update(
+                    {
+                        key: "; ".join(str(item) for item in value)
+                        if isinstance(value, list)
+                        else value
+                        for key, value in response.answers.items()
+                    }
+                )
                 writer.writerow(row_data)
         except Exception as e:
             logger.error(
                 "Failed to save response %s to CSV: %s", response.response_id, e
+            )
+
+    def _ensure_required_mapped_answers(
+        self, response: GeneratedResponse, mappings: list[MappingEntry]
+    ) -> None:
+        """Fill required form fields even when schema optionality skipped them."""
+
+        filled_columns: list[str] = []
+        for mapping in mappings:
+            if not mapping.form_required:
+                continue
+            current_answer = response.answers.get(mapping.dataset_column_name)
+            if _has_answer(current_answer):
+                continue
+
+            fallback = self.response_generator.generate_required_answer(
+                mapping.dataset_column_name,
+                response.answers,
+                persona_id=response.persona_id,
+            )
+            if not _has_answer(fallback):
+                continue
+
+            response.answers[mapping.dataset_column_name] = fallback
+            filled_columns.append(mapping.dataset_column_name)
+
+        if filled_columns:
+            response.metadata.setdefault("required_form_fallbacks", []).extend(
+                filled_columns
+            )
+            logger.info(
+                "Generated fallback answers for required form fields: %s",
+                ", ".join(filled_columns),
             )
 
     def _submit_with_retries(
@@ -112,7 +160,7 @@ class SubmissionRunner:
 
             try:
                 fill_result = self.form_filler.fill_and_submit(
-                    form_url, response, mappings
+                    form_url, response, mappings, no_submit=self.no_submit
                 )
             except Exception as e:
                 logger.exception(
@@ -161,6 +209,7 @@ class SubmissionRunner:
                 try:
                     response = self.response_generator.generate_response()
                     logger.info("Generated response ID: %s", response.response_id)
+                    self._ensure_required_mapped_answers(response, mappings)
 
                     # Save generated row locally for traceability
                     self._save_response(response)

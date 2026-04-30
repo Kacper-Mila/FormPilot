@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import csv
-from typing import Iterable, Literal
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Literal
 
 import pandas as pd
 

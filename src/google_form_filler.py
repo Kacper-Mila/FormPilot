@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
-import re
 from typing import Any, cast
 
 from playwright.sync_api import Browser, BrowserContext, Locator, Page, sync_playwright
 
-from form_mapper import MappingEntry
-from response_generator import GeneratedResponse
-from logger import setup_logging
+from .form_mapper import MappingEntry, compute_option_similarity
+from .logger import setup_logging
+from .response_generator import GeneratedResponse
 
 logger = setup_logging()
 
@@ -43,6 +43,7 @@ def _clean_heading_text(value: str) -> str:
     text = _normalize_whitespace(value)
     text = text.replace(" *", "")
     text = text.replace("Wymagane", "")
+    text = text.replace("Required", "")
     return _normalize_whitespace(text)
 
 
@@ -76,6 +77,9 @@ def _format_answers_for_log(values: list[str]) -> str:
 
 
 def _option_matches(target: str, label: str) -> bool:
+    if compute_option_similarity(target, label) == 1.0:
+        return True
+
     target_norm = _normalize_option(target)
     label_norm = _normalize_option(label)
     return bool(
@@ -152,7 +156,7 @@ class GoogleFormFiller:
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
 
-    def __enter__(self) -> "GoogleFormFiller":
+    def __enter__(self) -> GoogleFormFiller:
         self.start()
         return self
 
@@ -189,9 +193,14 @@ class GoogleFormFiller:
             self._playwright_manager = None
 
     def fill_and_submit(
-        self, form_url: str, response: GeneratedResponse, mappings: list[MappingEntry]
+        self,
+        form_url: str,
+        response: GeneratedResponse,
+        mappings: list[MappingEntry],
+        *,
+        no_submit: bool = False,
     ) -> FillResult:
-        """Open the form, map answers to DOM elements, fill, and submit."""
+        """Open the form, map answers to DOM elements, fill, and optionally submit."""
 
         started_here = self._browser is None
         if started_here:
@@ -211,19 +220,28 @@ class GoogleFormFiller:
                 logger.info("Filling page %d...", page_count)
                 self._fill_current_page(page, response, mappings)
 
-                submit_button = page.locator(
-                    "div[role='button']:has-text('Wyślij'), "
-                    "div[role='button']:has-text('Prześlij'), "
-                    "div[role='button']:has-text('Submit')"
-                ).first
-                next_button = page.locator(
-                    "div[role='button']:has-text('Dalej'), "
-                    "div[role='button']:has-text('Next')"
-                ).first
+                submit_button = self._button_by_labels(
+                    page, ["Wyślij", "Prześlij", "Submit", "Send"]
+                )
+                next_button = self._button_by_labels(page, ["Dalej", "Next"])
 
                 last_click_error: Exception | None = None
                 try:
                     if submit_button.count() > 0 and submit_button.is_visible():
+                        if no_submit:
+                            required_errors = self._missing_required_mapped_answers(
+                                response, mappings
+                            )
+                            if required_errors:
+                                raise RuntimeError(
+                                    "Dry run found unanswered required questions: "
+                                    + "; ".join(required_errors[:5])
+                                )
+                            return FillResult(
+                                success=True,
+                                message="Dry run completed without submitting.",
+                                final_url=page.url,
+                            )
                         logger.info("Submitting page %d", page_count)
                         submit_button.click()
                         self._wait_after_action(page)
@@ -306,6 +324,13 @@ class GoogleFormFiller:
                 if started_here:
                     self.close()
 
+    def _button_by_labels(self, page: Page, labels: list[str]) -> Locator:
+        label_pattern = "|".join(re.escape(label) for label in labels)
+        return page.locator(
+            "div[role='button'], button",
+            has_text=re.compile(rf"^\s*(?:{label_pattern})\s*$", re.IGNORECASE),
+        ).first
+
     def _wait_for_form_ready(self, page: Page) -> None:
         try:
             page.locator("div[role='listitem'], div[role='button']").first.wait_for(
@@ -338,7 +363,7 @@ class GoogleFormFiller:
     def _fill_required_questions(
         self, page: Page, response: GeneratedResponse, mappings: list[MappingEntry]
     ) -> None:
-        required_markers = page.locator("text=Wymagane")
+        required_markers = page.locator("text=/Wymagane|Required/i")
         required_count = required_markers.count()
         summaries = self._required_error_summaries(page)
         if summaries:
@@ -475,7 +500,7 @@ class GoogleFormFiller:
         return False
 
     def _required_error_summaries(self, page: Page) -> list[str]:
-        required_markers = page.locator("text=Wymagane")
+        required_markers = page.locator("text=/Wymagane|Required/i")
         summaries: list[str] = []
         for index in range(required_markers.count()):
             try:
@@ -489,6 +514,18 @@ class GoogleFormFiller:
             if summary:
                 summaries.append(summary[:200])
         return summaries
+
+    def _missing_required_mapped_answers(
+        self, response: GeneratedResponse, mappings: list[MappingEntry]
+    ) -> list[str]:
+        """Report mapped required fields that have no generated answer."""
+
+        return [
+            mapping.form_question_text
+            for mapping in mappings
+            if mapping.form_required
+            and not _has_answer(response.answers.get(mapping.dataset_column_name))
+        ]
 
     def _assert_submission_complete(self, page: Page) -> None:
         if not self._is_submission_confirmation(page):

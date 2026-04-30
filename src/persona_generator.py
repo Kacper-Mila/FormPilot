@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
 import math
 import random
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -104,6 +104,16 @@ class PersonaGenerator:
         """Return personas as plain dictionaries for display or debugging."""
 
         return [asdict(persona) for persona in self._personas]
+
+    def persona_by_id(self, persona_id: str | None) -> Persona | None:
+        """Find a configured persona by id."""
+
+        if persona_id is None:
+            return None
+        return next(
+            (persona for persona in self._personas if persona.persona_id == persona_id),
+            None,
+        )
 
     def choose_persona(
         self, weighted: bool = True, random_seed: int | None = None

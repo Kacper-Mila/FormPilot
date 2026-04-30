@@ -1,329 +1,147 @@
 # FormPilot
 
-FormPilot is a modular Python application that learns answer patterns
-from completed survey CSV datasets, generates synthetic but
-statistically coherent survey responses, and automatically fills Google
-Forms using Playwright.
+FormPilot learns answer patterns from completed survey CSV files, generates
+synthetic responses, maps them to Google Forms, and can fill forms through
+Playwright. It is designed for English and Polish surveys, with conservative
+defaults so real submissions require an explicit opt-in.
 
-The project is designed for: - Polish-language surveys - probabilistic
-synthetic response generation - robust Google Forms browser automation -
-repeatable multi-submission workflows - clean logging and debugging -
-modular MVP-first development
+## What It Does
 
-------------------------------------------------------------------------
-
-## Overview
-
-The system follows a practical architecture optimized for small and
-medium datasets (for example, 80 completed surveys):
-
-1.  Load completed survey CSV data
-2.  Clean and normalize responses
-3.  Detect schema and question types
-4.  Learn answer distributions and dependencies
-5.  Generate one synthetic respondent
-6.  Parse Google Form structure
-7.  Fill and submit the form automatically
-8.  Repeat for N submissions
-
-Instead of overengineering a full machine learning pipeline, FormPilot
-uses a probability-driven generator that is easier to control, easier to
-debug, and better suited to survey-style tabular data.
-
-------------------------------------------------------------------------
-
-## Features
-
-### Data Pipeline
-
--   CSV loading with Polish encoding support
--   delimiter auto-detection
--   column normalization
--   repeated label standardization
--   missing value handling
--   cleaned CSV export
-
-### Schema Understanding
-
--   single-choice detection
--   multi-select detection
--   Likert / scale detection
--   short and long text detection
--   optional field detection
--   reusable schema JSON export
-
-### Statistical Response Generator
-
--   marginal probability tables
--   conditional dependencies
--   answer consistency rules
--   persona support
--   controlled randomness
--   duplicate prevention
-
-### Google Forms Automation
-
--   Playwright browser automation
--   visible field parsing
--   radio buttons
--   checkboxes
--   dropdowns
--   short answer
--   paragraph fields
--   linear scales
--   multi-page navigation
--   automatic submission
--   screenshot on failure
-
-### Logging and Traceability
-
--   generated responses CSV
--   submission logs
--   schema export
--   probability model export
--   failure screenshots
--   per-run debugging metadata
-
-------------------------------------------------------------------------
-
-## Project Structure
-
-``` text
-FormPilot/
-│
-├── data/
-│   ├── input_surveys.csv
-│   ├── cleaned_surveys.csv
-│   └── generated_responses.csv
-│
-├── src/
-│   ├── data_loader.py
-│   ├── data_cleaner.py
-│   ├── schema_detector.py
-│   ├── probability_model.py
-│   ├── persona_generator.py
-│   ├── response_generator.py
-│   ├── form_parser.py
-│   ├── form_mapper.py
-│   ├── google_form_filler.py
-│   ├── submission_runner.py
-│   ├── logger.py
-│   └── main.py
-│
-├── config/
-│   └── settings.yaml
-│
-├── logs/
-│   └── submissions.log
-│
-├── requirements.txt
-└── README.md
-```
-
-------------------------------------------------------------------------
+- Loads CSV files with delimiter and Polish encoding fallback.
+- Cleans columns into stable ids while preserving original question text.
+- Drops timestamp columns such as `Sygnatura czasowa`, `data`, and `godzina`
+  before schema/model generation when configured.
+- Detects question types, optional fields, simple conditional follow-ups, and
+  answer options.
+- Builds marginal and conditional probability models for synthetic responses.
+- Parses Google Forms, including common radio, checkbox, dropdown, text,
+  paragraph, scale, required, and multi-page controls.
+- Exports a mapping review JSON before filling.
+- Supports dry-run/no-submit filling and explicit submission mode.
 
 ## Installation
 
-### Clone the repository
-
-``` bash
-git clone https://github.com/your-username/formpilot.git
-cd formpilot
-```
-
-### Create virtual environment
-
-``` bash
+```bash
 python -m venv .venv
 source .venv/bin/activate
+python -m pip install -e ".[dev]"
+python -m playwright install chromium
 ```
 
-### Windows
+The package exposes both module and console entrypoints:
 
-``` bash
-.venv\Scripts\activate
+```bash
+python -m src.main --help
+formpilot --help
 ```
 
-### Install dependencies
+## Typical Workflow
 
-``` bash
-pip install -r requirements.txt
-playwright install
+Build local artifacts from a CSV:
+
+```bash
+formpilot --csv resources/form-data-set.csv --count 0 --headless
 ```
 
-------------------------------------------------------------------------
+Generate one response for review:
 
-## Requirements
-
--   Python 3.11+
--   pandas
--   numpy
--   Playwright
--   PyYAML
--   pydantic (optional)
--   scikit-learn (optional)
-
-------------------------------------------------------------------------
-
-## Usage
-
-### CLI example
-
-``` bash
-python src/main.py \
-    --csv data/input_surveys.csv \
-    --form "https://docs.google.com/forms/..." \
-    --count 25 \
-    --headless \
-    --config config/settings.yaml
+```bash
+formpilot --generate-response --seed 123
 ```
 
-### Arguments
+Parse a form and export the mapping report without submitting:
 
--   `--csv` : path to source CSV
--   `--form` : Google Form URL
--   `--count` : number of submissions
--   `--config` : YAML config path
--   `--headless` : run Playwright without a visible browser window
--   `--headed` : force a visible browser window for debugging
--   `--timeout-ms` : Playwright page/action timeout in milliseconds
--   `--action-delay-ms` : small delay after field actions; lower is faster
--   `--list-personas` : print available personas
--   `--generate-response` : print one generated sample response
--   `--persona-mode` : choose `weighted` or `uniform` persona selection
--   `--seed` : set a random seed for reproducible generation
+```bash
+formpilot \
+  --csv resources/form-data-set.csv \
+  --form "https://docs.google.com/forms/..." \
+  --count 0 \
+  --headless
+```
 
-Terminal arguments override matching values from `config/settings.yaml` for
-that run. For example, `--headless` overrides `automation.headless`, and
-`--csv` overrides `paths.csv_path`.
+Dry-run filling/validation without submitting:
 
-### Settings
+```bash
+formpilot \
+  --csv resources/form-data-set.csv \
+  --form "https://docs.google.com/forms/..." \
+  --count 1 \
+  --dry-run \
+  --headless
+```
 
-`app.name` is the application name used for configuration readability.
+Submit only after reviewing the mapping and intentionally opting in:
 
-`app.log_level` controls log verbosity. Common values are `DEBUG`, `INFO`,
-`WARNING`, and `ERROR`.
+```bash
+formpilot \
+  --csv resources/form-data-set.csv \
+  --form "https://docs.google.com/forms/..." \
+  --count 1 \
+  --submit \
+  --headless
+```
 
-`automation.headless` controls whether Playwright runs without a visible browser
-window. It is overridden by `--headless` or `--headed`.
+Only submit to forms you own or have clear permission to test. Tests and CI do
+not submit real Google Forms.
 
-`automation.timeout_ms` is the browser/page timeout in milliseconds. It is
-overridden by `--timeout-ms`.
+## Mapping Review
 
-`automation.action_delay_ms` is the small pause after field actions. Lower
-values are faster; higher values can help with slow forms. It is overridden by
-`--action-delay-ms`.
+FormPilot writes `data/form_mapping.json` by default. Review it before using
+`--submit`.
 
-`automation.retry_failed_submissions` enables retrying the same generated
-response when a form submission attempt fails.
+The report includes:
 
-`automation.max_submission_retries` sets how many extra attempts are allowed
-after the first failed attempt. For example, `1` means one retry, so two total
-attempts.
+- accepted matched questions and confidence scores
+- unmatched dataset questions
+- unmatched form questions
+- blocked required form questions
+- low-confidence candidate matches
+- answer option mapping issues
 
-`automation.stop_on_error` stops the batch after a response still fails once all
-configured retries are exhausted.
+Low-confidence mappings are not used for filling unless
+`mapping.allow_low_confidence_mappings` is set to `true`. Required form fields
+without a reliable mapping block submission.
 
-`cleaning.drop_timestamp_columns` removes timestamp-like CSV columns before
-schema/model generation.
+## Configuration
 
-`cleaning.timestamp_patterns` lists case-insensitive column-name fragments that
-should be treated as timestamps.
+`config/settings.yaml` contains the default paths and safety settings.
 
-`paths.csv_path` is the default input CSV path. It is overridden by `--csv`.
+Important options:
 
-`paths.data_dir` is the project data folder reference.
+- `automation.dry_run`: default no-submit behavior.
+- `automation.submit`: must be `true`, or use `--submit`, for real submission.
+- `mapping.minimum_question_match_confidence`: minimum accepted question match.
+- `mapping.minimum_option_match_confidence`: minimum accepted option match.
+- `mapping.allow_low_confidence_mappings`: manual override for risky mappings.
+- `locale.language`: `auto`, `pl`, or `en`.
+- `cleaning.drop_timestamp_columns`: exclude timestamp-like CSV columns.
+- `cleaning.timestamp_patterns`: timestamp column-name fragments.
 
-`paths.cleaned_data` is where the cleaned CSV is written.
+CLI flags override config for a single run.
 
-`paths.generated_responses` is where generated responses from the current batch
-are written. This file is cleared at the start of each submission run.
+## Generated Artifacts
 
-`paths.logs_dir` is where log files are written.
+By default, generated runtime artifacts are written under `data/` and logs under
+`logs/`:
 
-`paths.schema_export` is where the detected survey schema is written, and where
-the CLI looks for an existing schema if no CSV is supplied.
+- `data/cleaned_surveys.csv`
+- `data/schema.json`
+- `data/probability_model.json`
+- `data/form_schema.json`
+- `data/form_mapping.json`
+- `data/generated_responses.csv`
+- `logs/formpilot.log`
 
-`paths.model_export` is where the probability model is written, and where it is
-loaded from when submissions run without rebuilding from CSV.
+These are ignored by git unless you intentionally add fixtures.
 
-`paths.form_schema_export` is where the parsed Google Form schema is written.
+## Development
 
-`paths.mapping_export` is where the schema-to-form mapping table is written.
+Run the local checks:
 
-`persona.list_personas` prints available personas when set to `true`.
-`--list-personas` can also enable this for one run.
+```bash
+pytest
+ruff check .
+mypy src
+```
 
-`persona.generate_response` prints one generated sample response when set to
-`true`. `--generate-response` can also enable this for one run.
-
-`persona.mode` chooses persona selection mode: `weighted` or `uniform`. It is
-overridden by `--persona-mode`.
-
-`persona.seed` sets the default random seed. `null` means non-deterministic
-sampling. It is overridden by `--seed`.
-
-------------------------------------------------------------------------
-
-## Core Modules
-
-### `data_loader.py`
-
-Loads CSV files safely with encoding validation and delimiter detection.
-
-### `data_cleaner.py`
-
-Normalizes labels, handles nulls, and exports cleaned datasets.
-
-### `schema_detector.py`
-
-Infers question types and builds reusable schema definitions.
-
-### `probability_model.py`
-
-Learns answer distributions and simple dependencies.
-
-### `persona_generator.py`
-
-Defines optional respondent personas for weighted generation.
-
-### `response_generator.py`
-
-Builds one coherent synthetic respondent at a time.
-
-### `form_parser.py`
-
-Reads Google Form structure and visible question blocks.
-
-### `form_mapper.py`
-
-Maps CSV schema to Google Form labels using fuzzy Polish matching.
-
-### `google_form_filler.py`
-
-Controls Playwright automation and performs submission.
-
-### `submission_runner.py`
-
-Repeats generate → fill → submit workflow N times.
-
-### `main.py`
-
-CLI entrypoint for the complete pipeline.
-
-------------------------------------------------------------------------
-
-## Design Principles
-
-FormPilot prioritizes: - reliability over complexity - modular
-architecture - Polish text robustness - reproducible outputs - easy
-debugging - incremental one-file-at-a-time development
-
-For small survey datasets, this probability-based architecture is
-typically more maintainable than training a heavy ML model.
-
-------------------------------------------------------------------------
-
-## License
-
-MIT License
+CI runs the same lint, type check, and test suite through GitHub Actions.

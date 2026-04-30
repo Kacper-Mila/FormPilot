@@ -5,6 +5,8 @@ automation:
     headless: false
     timeout_ms: 15000
     action_delay_ms: 50
+    dry_run: true
+    submit: false
     retry_failed_submissions: true
     max_submission_retries: 1
     stop_on_error: false
@@ -13,6 +15,14 @@ cleaning:
     timestamp_patterns:
         - timestamp
         - Sygnatura czasowa
+        - data
+        - godzina
+locale:
+    language: auto
+mapping:
+    minimum_question_match_confidence: 0.6
+    minimum_option_match_confidence: 0.72
+    allow_low_confidence_mappings: false
 paths:
     csv_path: resources/form-data-set.csv
     data_dir: data

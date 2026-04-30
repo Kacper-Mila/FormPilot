@@ -7,9 +7,9 @@ section/page structure from the live form DOM.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import logging
 import re
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
@@ -25,11 +25,11 @@ def _default_question_ids() -> list[str]:
     return []
 
 
-def _default_sections() -> list["FormSection"]:
+def _default_sections() -> list[FormSection]:
     return []
 
 
-def _default_questions() -> list["FormQuestion"]:
+def _default_questions() -> list[FormQuestion]:
     return []
 
 
@@ -41,6 +41,7 @@ def _clean_heading_text(value: str) -> str:
     text = _normalize_whitespace(value)
     text = text.replace(" *", "")
     text = text.replace("Wymagane", "")
+    text = text.replace("Required", "")
     return _normalize_whitespace(text)
 
 
@@ -48,6 +49,14 @@ def _is_truthy_flag(value: str | None) -> bool:
     if not value:
         return False
     return value.strip().lower() in {"true", "1", "yes", "tak"}
+
+
+def _has_required_marker(text: str) -> bool:
+    normalized = _normalize_whitespace(text)
+    return bool(
+        re.search(r"\b(Wymagane|Required)\b", normalized, re.IGNORECASE)
+        or re.search(r"(^|\s)\*(\s|$)", normalized)
+    )
 
 
 def _deduplicate_preserving_order(values: list[str]) -> list[str]:
@@ -77,6 +86,7 @@ def _looks_like_scale(options: list[str]) -> bool:
         "ani tak ani nie",
         "trudno powiedziec",
         "neutral",
+        "neither agree nor disagree",
         "raczej tak",
         "zdecydowanie tak",
         "very unlikely",
@@ -116,6 +126,7 @@ def _collect_option_labels(option_locator: Any) -> list[str]:
             label = _extract_locator_text(option)
         label = _normalize_whitespace(label or "")
         if label:
+            label = re.sub(r"\s*(?:Opcja|Option)\s+\d+\s*", "", label).strip()
             labels.append(label)
 
     return _deduplicate_preserving_order(labels)
@@ -150,7 +161,9 @@ def _build_question_text(heading_locator: Any) -> str:
         return ""
 
     parts = [part for part in heading_text.split(" ") if part]
-    cleaned_parts = [part for part in parts if part != "*" and part != "Wymagane"]
+    cleaned_parts = [
+        part for part in parts if part not in {"*", "Wymagane", "Required"}
+    ]
     return _clean_heading_text(" ".join(cleaned_parts))
 
 
@@ -252,7 +265,9 @@ class GoogleFormParser:
 
         return self.parse_form(form_url).questions
 
-    def parse_form(self, form_url: str) -> ParsedFormSchema:
+    def parse_form(
+        self, form_url: str, *, traverse_pages: bool = True
+    ) -> ParsedFormSchema:
         """Open a Google Form and extract the visible schema."""
 
         normalized_url = _normalize_form_url(form_url)
@@ -276,7 +291,9 @@ class GoogleFormParser:
                     )
 
                 form_title = _normalize_whitespace(page.title() or "") or normalized_url
-                questions, sections = self._extract_schema_from_page(page, form_title)
+                questions, sections = self._extract_schema_from_visible_pages(
+                    page, form_title, traverse_pages=traverse_pages
+                )
                 return ParsedFormSchema(
                     form_title=form_title,
                     form_url=page.url,
@@ -285,6 +302,84 @@ class GoogleFormParser:
                 )
             finally:
                 browser.close()
+
+    def _button_by_labels(self, page: Any, labels: list[str]) -> Any:
+        label_pattern = "|".join(re.escape(label) for label in labels)
+        return page.locator(
+            "div[role='button'], button",
+            has_text=re.compile(rf"^\s*(?:{label_pattern})\s*$", re.IGNORECASE),
+        ).first
+
+    def _extract_schema_from_visible_pages(
+        self, page: Any, form_title: str, *, traverse_pages: bool
+    ) -> tuple[list[FormQuestion], list[FormSection]]:
+        all_questions: list[FormQuestion] = []
+        all_sections: list[FormSection] = []
+        seen_question_keys: set[tuple[str, str, tuple[str, ...]]] = set()
+        page_index = 0
+
+        while True:
+            questions, sections = self._extract_schema_from_page(page, form_title)
+            page_question_ids: list[str] = []
+
+            for question in questions:
+                key = (
+                    question.visible_text.casefold(),
+                    question.field_type.casefold(),
+                    tuple(option.casefold() for option in question.options),
+                )
+                if key in seen_question_keys:
+                    continue
+                seen_question_keys.add(key)
+                question.page_index = page_index
+                question.form_question_id = f"form_q_{len(all_questions) + 1}"
+                page_question_ids.append(question.form_question_id)
+                all_questions.append(question)
+
+            section = sections[-1] if sections else None
+            all_sections.append(
+                FormSection(
+                    page_index=page_index,
+                    title=section.title if section else form_title,
+                    description=section.description if section else "",
+                    question_ids=page_question_ids,
+                )
+            )
+
+            if not traverse_pages:
+                break
+
+            next_button = self._button_by_labels(page, ["Dalej", "Next"])
+            try:
+                if next_button.count() == 0 or not next_button.is_visible():
+                    break
+
+                before_heading = _extract_locator_text(
+                    page.locator("div[role='listitem'] [role='heading']").first
+                )
+                next_button.click()
+                page.wait_for_timeout(300)
+                try:
+                    page.wait_for_load_state(
+                        "networkidle", timeout=min(self.timeout_ms, 3000)
+                    )
+                except PlaywrightTimeoutError:
+                    pass
+                after_heading = _extract_locator_text(
+                    page.locator("div[role='listitem'] [role='heading']").first
+                )
+                if before_heading and after_heading == before_heading:
+                    self.logger.info(
+                        "Stopping multi-page parse traversal because Next did not "
+                        "advance; required fields may block traversal."
+                    )
+                    break
+                page_index += 1
+            except Exception as exc:
+                self.logger.info("Stopping multi-page parse traversal: %s", exc)
+                break
+
+        return all_questions, all_sections
 
     def _extract_schema_from_page(
         self, page: Any, form_title: str
@@ -328,7 +423,14 @@ class GoogleFormParser:
 
             item_text = _extract_locator_text(item)
             required = _is_truthy_flag(item.get_attribute("aria-required"))
-            required = required or "Wymagane" in item_text
+            required = required or _has_required_marker(item_text)
+            try:
+                required = required or item.locator(
+                    "[aria-label*='Wymagane'], [aria-label*='Required'], "
+                    "[aria-label*='required'], [aria-label*='wymagane']"
+                ).count() > 0
+            except Exception:
+                pass
 
             field_type = _detect_field_type(
                 radio_options=radio_options,

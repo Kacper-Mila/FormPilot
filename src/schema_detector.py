@@ -8,14 +8,31 @@ Phase 3 responsibilities:
 
 from __future__ import annotations
 
+import json
+import re
+import unicodedata
 from dataclasses import asdict, dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import json
-import re
+
+from .data_cleaner import normalize_column_name
+
+_POLISH_ASCII_MAP = str.maketrans(
+    {
+        "ą": "a",
+        "ć": "c",
+        "ę": "e",
+        "ł": "l",
+        "ń": "n",
+        "ó": "o",
+        "ś": "s",
+        "ź": "z",
+        "ż": "z",
+    }
+)
 
 
 def _default_allowed_values() -> list[str]:
@@ -26,7 +43,7 @@ def _default_dependency_metadata() -> dict[str, Any]:
     return {}
 
 
-class FieldType(str, Enum):
+class FieldType(StrEnum):
     """Supported survey field categories."""
 
     SINGLE_CHOICE = "single_choice"
@@ -190,6 +207,80 @@ def _extract_allowed_values(
     return []
 
 
+def _question_text_for_column(dataframe: pd.DataFrame, column_name: str) -> str:
+    """Return original CSV question wording when the cleaner preserved it."""
+
+    metadata = dataframe.attrs.get("column_metadata", {})
+    if isinstance(metadata, dict):
+        column_metadata = metadata.get(str(column_name))
+        if isinstance(column_metadata, dict):
+            original_text = str(column_metadata.get("original_text", "")).strip()
+            if original_text:
+                return original_text
+
+    original_columns = dataframe.attrs.get("original_columns", {})
+    if isinstance(original_columns, dict):
+        original_text = str(original_columns.get(str(column_name), "")).strip()
+        if original_text:
+            return original_text
+
+    return str(column_name)
+
+
+def _ascii_casefold(value: str) -> str:
+    text = unicodedata.normalize("NFKD", value.casefold().translate(_POLISH_ASCII_MAP))
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _detect_conditional_metadata(
+    questions: list[SurveyQuestion], question: SurveyQuestion
+) -> dict[str, Any]:
+    """Infer simple optional follow-up dependencies from question wording."""
+
+    text = _ascii_casefold(question.question_text)
+    normalized_text = _ascii_casefold(normalize_column_name(text).replace("_", " "))
+    conditional_markers = (
+        "w przypadku",
+        "jeśli",
+        "jezeli",
+        "jeżeli",
+        "if ",
+        "when ",
+    )
+    if not any(marker in normalized_text for marker in conditional_markers):
+        return {}
+
+    for parent in reversed(questions):
+        parent_text = _ascii_casefold(parent.question_text)
+        normalized_parent = _ascii_casefold(
+            normalize_column_name(parent_text).replace("_", " ")
+        )
+        if "wyksztalcenie" in normalized_text and "wyksztalcenie" in normalized_parent:
+            return {
+                "conditional_on": {
+                    "question_id": parent.question_id,
+                    "column_name": parent.column_name,
+                    "expected_values": ["wyższe", "wyzsze", "higher", "university"],
+                }
+            }
+
+        parent_tokens = {
+            token for token in normalized_parent.split() if len(token) >= 5
+        }
+        text_tokens = {token for token in normalized_text.split() if len(token) >= 5}
+        if parent_tokens & text_tokens:
+            return {
+                "conditional_on": {
+                    "question_id": parent.question_id,
+                    "column_name": parent.column_name,
+                    "expected_values": [],
+                }
+            }
+
+    return {}
+
+
 def detect_schema(dataframe: pd.DataFrame) -> SurveySchema:
     """Infer a reusable survey schema from a cleaned dataframe."""
 
@@ -219,21 +310,23 @@ def detect_schema(dataframe: pd.DataFrame) -> SurveySchema:
 
         allowed_values = _extract_allowed_values(field_type, non_null_text)
 
-        questions.append(
-            SurveyQuestion(
-                question_id=f"q_{index}",
-                column_name=column_name,
-                question_text=column_name,
-                field_type=field_type,
-                allowed_values=allowed_values,
-                optional=missing_ratio > 0,
-                dependency_metadata={
-                    "missing_ratio": round(float(missing_ratio), 6),
-                    "non_null_count": non_null_count,
-                    "unique_count": unique_count,
-                },
-            )
+        question = SurveyQuestion(
+            question_id=f"q_{index}",
+            column_name=column_name,
+            question_text=_question_text_for_column(dataframe, str(column_name)),
+            field_type=field_type,
+            allowed_values=allowed_values,
+            optional=missing_ratio > 0,
+            dependency_metadata={
+                "missing_ratio": round(float(missing_ratio), 6),
+                "non_null_count": non_null_count,
+                "unique_count": unique_count,
+            },
         )
+        question.dependency_metadata.update(
+            _detect_conditional_metadata(questions, question)
+        )
+        questions.append(question)
 
     return SurveySchema(questions=questions)
 
